@@ -1,0 +1,1174 @@
+/* ==========================================================================
+ *  graphics/graph2d/message.c
+ *
+ *  FF3's message printer (see message.h): FF2 message.c's control-code
+ *  interpreter, glyph packets and number printing, with FF2's windowed,
+ *  vertical and typewriter printers gone, 10 font banks instead of 5 and a
+ *  page mode (MsgPrintPage). Ported from MioPan's message.c and checked
+ *  function by function against FF3 0x20c400..0x20df28.
+ *
+ *  PC: the GS packets are built as FF3 builds them; SetFontPat also hands
+ *  each glyph to the renderer (MioPan's font bridge), with the TEX0 that
+ *  SetFontTex loaded last.
+ * ======================================================================== */
+#include "graphics/graph2d/message.h"
+
+#include <stdio.h>                      // sprintf
+#include <string.h>                     // memset
+#include <libgraph.h>                   // SCE_GS_* register addresses
+
+#include "graphics/graph2d/font.h"      // FontTexSendVram
+#include "graphics/graph2d/g2d_draw.h"  // StartDmaDirectTrans, EndDmaDirectTrans
+#include "graphics/graph2d/message_data.h"  // fntdat, msg_font_cell, msg_col, font_w_tbl
+#include "graphics/gs_reg.h"            // GS_REG_SET, SetGsRegsCached, GetGsRegCached
+#include "reipan/reipan_memory.h"       // PC: ReiPan_GetHostPointer
+#include "reipan/rendering/reipan_renderer.h"   // PC: the glyph quad
+#include "system/eeiop/cd_file_dat.h"   // MSG_OBJ
+#include "system/mc/prg/mc_check_card.h"    // GetAccessMemoryCardPort
+#include "system/os/eecdvd.h"           // LoadReq
+#include "system/os/system.h"           // GetSysWrk, SYS_WRK::GetLanguage
+#include "common/get_byte.h"     // Get1Byte, Get4Byte
+#include "ingame/event/prg/ev_get.h"    // EvBinChangeAddr4
+
+// The page state of MsgPrintPage (data 0x32d688).
+// layout: host -- msg is a pointer; page / state / _06 are FF3's 0x04..0x06.
+struct MSG_PAGE_CTRL                /* 0xc on the EE */
+{
+    /* 0x00 */ u_char *msg;         // the stream printed last (another one restarts at page 0)
+    /* 0x04 */ s_char  page;        // page shown
+    /* 0x05 */ u_char  state;       // MsgIsPageWait: 1 next page exists, 2 drawing, 0 last page
+    /* 0x06 */ u_char  _06;         // cleared only
+    /* 0x08 */ int     _08;         // cleared only
+};
+static_assert(offsetof(MSG_PAGE_CTRL, page) == sizeof(u_char *), "MSG_PAGE_CTRL.page (EE 0x04)");
+
+static MSG_PAGE_CTRL msg_page;      /* data 0x32d688 */
+
+static u_char msg_cur_col[3];       /* sdata 0x373650 (gp+0x160): SetCurColorRGB's r, g, b */
+static u_char msg_subtract;         /* sdata 0x373653 (gp+0x163): MsgSetSubtractMode */
+
+static int GetAccessMcSlot_Msg(void);
+
+// The numbers 0xfc <n> prints (FF2 mes_ex_num_tbl). sdata 0x371248 (gp-0x22a8).
+static int (*mes_ex_num_tbl[1])(void) = { GetAccessMcSlot_Msg };
+
+// The glyph SPRITE's GIF tag: one loop, PRIM sprite + TME + ABE + FST,
+// packed, 5 registers (RGBAQ, UV, XYZF2, UV, XYZF2). data 0x371250.
+#define FONT_PAT_GIFTAG     0x50ab400000008001ULL
+#define FONT_PAT_REGS       0x43431ULL
+
+// PC: the TEX0 the last SetFontTex loaded, for the renderer's glyph quads.
+static int font_bank_host;
+static u_long font_tex0_host;
+
+static void MsgExeCtrlInit(DISP_STR *disp, MSG_EXE_CTRL *ctrl, u_char disp_type);
+static u_long *SetFontTex(u_long *pbuf, u_long tex0, int bank);
+static u_long *SetFontPat(u_long *pbuf, int type, int pri, int fn, int x, int y, u_char r,
+                          u_char g, u_char b, u_char a);
+static void SetMsgFont(u_long **ppbuf, DISP_STR *disp, int bank, u_char fn);
+static int  PrintMsgOneLine(DISP_STR *disp, MSG_EXE_CTRL *ctrl, u_long **ppbuf);
+static void MesBankExe(DISP_STR *disp, MSG_EXE_CTRL *ctrl);
+static void MesColExe(DISP_STR *disp, MSG_EXE_CTRL *ctrl);
+static void MesArrangeExe(DISP_STR *disp, MSG_WIN_DAT *win, MSG_EXE_CTRL *ctrl);
+static void MesRetExe(DISP_STR *disp, MSG_WIN_DAT *win, MSG_EXE_CTRL *ctrl);
+static void MesExNumExe(DISP_STR *disp, MSG_EXE_CTRL *ctrl, u_long **ppbuf);
+
+// ──────────────────────────────────────────────────────────────────────
+// State
+// ──────────────────────────────────────────────────────────────────────
+
+// Reset, then the current colour white. Boot (one_Boot_Load) and the pad
+// check call it. FF3 0x0020c400.
+
+void MsgInit(void)
+{
+    MsgReset();
+    msg_cur_col[1] = 0xff;
+    msg_cur_col[2] = 0xff;
+    msg_cur_col[0] = 0xff;
+}
+
+// Subtract mode off, page state cleared. The message windows call it when
+// they close. FF3 0x0020c438 (not FF2's MesPassCheck, whose name it had).
+
+void MsgReset(void)
+{
+    msg_subtract = 0;
+    msg_page._08 = 0;
+    msg_page.page = 0;
+    msg_page.state = 0;
+    msg_page._06 = 0;
+}
+
+// The interpreter state of one print: line start at the pen, 24x24 font,
+// bank 0, no arrangement. FF3 0x0020c460; FF2 MsgExeCtrlInit (bank 1 there).
+
+static void MsgExeCtrlInit(DISP_STR *disp, MSG_EXE_CTRL *ctrl, u_char disp_type)
+{
+    ctrl->start_x   = disp->pos_x;
+    ctrl->start_y   = disp->pos_y;
+    ctrl->disp_type = disp_type;
+    ctrl->font_h    = 0x18;
+    ctrl->font_w    = 0x18;
+    ctrl->font_pos  = 0;
+    ctrl->now_bank  = 0;
+    ctrl->arrange   = 0;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// GS packets
+// ──────────────────────────────────────────────────────────────────────
+
+// The text environment: alpha blend (Cs - Cd) * As + Cd, or Cd - Cs * As in
+// subtract mode; TEX1 LCM, MMIN 5, K 1; CLAMP repeat. FF3 0x0020c498; FF2
+// SetFontEnv (TEST / ZBUF moved to SetFontEnvZ).
+
+void SetFontEnv(void)
+{
+    static const GS_REG_SET font_env[3] =           /* data 0x35c6a0 */
+    {
+        { 0x0000008000000044ULL, SCE_GS_ALPHA_1 },
+        { 0x0000000100000141ULL, SCE_GS_TEX1_1 },
+        { 0,                     SCE_GS_CLAMP_1 },
+    };
+    static const GS_REG_SET font_env_sub[3] =       /* data 0x35c670 */
+    {
+        { 0x0000000000000042ULL, SCE_GS_ALPHA_1 },
+        { 0x0000000100000141ULL, SCE_GS_TEX1_1 },
+        { 0,                     SCE_GS_CLAMP_1 },
+    };
+    GS_REG_SET env[3];
+
+    memcpy(env, (msg_subtract == 0) ? font_env : font_env_sub, sizeof(env));
+    SetGsRegsCached(env, 3, 1);
+}
+
+// SetFontEnv plus alpha test GREATER 0 and Z test GEQUAL on the 0x118 Z
+// buffer. FF3 0x0020c510.
+
+void SetFontEnvZ(void)
+{
+    static const GS_REG_SET font_env_z[2] =         /* data 0x35c6d0 */
+    {
+        { 0x000000000005000dULL, SCE_GS_TEST_1 },
+        { 0x000000000a000118ULL, SCE_GS_ZBUF_1 },
+    };
+    GS_REG_SET env[2];
+
+    SetFontEnv();
+    memcpy(env, font_env_z, sizeof(env));
+    SetGsRegsCached(env, 2, 1);
+}
+
+// A+D packet: TEXFLUSH, then TEX0_1 = tex0 (PSMT4: first with CLD/CSM set
+// so the CLUT loads). FF3 0x0020c568; FF2 SetFontTex took a bank and also
+// knew PSMT4HH / PSMT4HL (FF3's font pages, which load no CLUT here).
+
+static u_long *SetFontTex(u_long *pbuf, u_long tex0, int bank)
+{
+    font_bank_host = bank;
+    font_tex0_host = tex0;          // PC: SetFontPat's renderer quad
+
+    pbuf[1] = SCE_GIF_PACKED_AD;
+    pbuf[0] = 0x1000000000008003ULL;    // NLOOP 3, EOP, NREG 1
+    pbuf[2] = 0;
+    pbuf[3] = SCE_GS_TEXFLUSH;
+    if ((tex0 & 0x3f00000) == 0x1400000)
+    {
+        pbuf[4] = (tex0 & 0xfffffffc0fffffULL) | 0x2000000001300000ULL;
+        pbuf[5] = SCE_GS_TEX0_1;
+        pbuf[6] = tex0 & 0xffffffffffffffULL;
+        pbuf[7] = SCE_GS_TEX0_1;
+    }
+    else
+    {
+        pbuf[4] = tex0;
+        pbuf[5] = SCE_GS_TEX0_1;
+        pbuf[7] = 0x7f;             // A+D to 0x7f: no register (pad)
+        pbuf[6] = 0;
+    }
+    return pbuf + 8;
+}
+
+// One glyph: a SPRITE of cell `fn` (row-major, msg_font_cell[type]) with its
+// top-left at screen pixel x, y (origin top-left, 640x448), cell-sized. Subtract mode inverts the colour.
+// FF3 0x0020c628; FF2 SetFontPat (FF3: one cell table, centred y, no
+// interlace halving, glyph drawn cell-wide whatever its advance).
+
+static u_long *SetFontPat(u_long *pbuf, int type, int pri, int fn, int x, int y, u_char r,
+                          u_char g, u_char b, u_char a)
+{
+    const MSG_FONT_CELL *cell = &msg_font_cell[type];
+    int    px;
+    int    py;
+    u_int  z;
+    int    du;
+    int    dv;
+    u_int *q;
+
+    py = (y + 0x720) * 0x10;
+    px = (x + 0x6c0) * 0x10;
+    z  = 0xfffff - (pri & 0xfffff);
+    du = (fn % cell->cols) * cell->w;
+    dv = (fn / cell->cols) * cell->h;
+
+    pbuf[1] = FONT_PAT_REGS;
+    pbuf[0] = FONT_PAT_GIFTAG;
+    q = (u_int *)&pbuf[2];
+    if (msg_subtract == 0)
+    {
+        q[0] = r;
+        q[1] = g;
+        q[2] = b;
+    }
+    else
+    {
+        q[0] = 0xff - r;
+        q[1] = 0xff - g;
+        q[2] = 0xff - b;
+    }
+    q[3]  = a;
+    q[4]  = (du + cell->off_u) * 0x10;
+    q[5]  = (dv + cell->off_v) * 0x10;
+    q[6]  = 0;
+    q[7]  = 0;
+    q[9]  = py;
+    q[8]  = px;
+    q[10] = z;
+    q[11] = 0;
+    q[12] = ((du + cell->w) - cell->off_u) * 0x10;
+    q[13] = ((dv + cell->h) - cell->off_v) * 0x10;
+    q[14] = 0;
+    q[15] = 0;
+    q[16] = px + cell->w * 0x10;
+    q[17] = py + cell->h * 0x10;
+    q[18] = z;
+    q[19] = 0;
+
+    // PC: the same quad on the renderer (the packet above is not executed).
+    // Corners TL, TR, BL, BR in screen pixels; UVs in texels. x, y are
+    // already screen pixels: XYOFFSET_1 is (0x6c0, 0x720), so px / py above
+    // land on pixel (x, y), not on the centre-relative (x + 320, y + 224) of
+    // g2d_draw.c's 2048-based packets.
+    {
+        float xy[8];
+        float uv[8];
+        float x0 = (float)x;
+        float y0 = (float)y;
+        float x1 = x0 + (float)cell->w;
+        float y1 = y0 + (float)cell->h;
+        float u0 = (float)(du + cell->off_u);
+        float v0 = (float)(dv + cell->off_v);
+        float u1 = (float)(du + cell->w - cell->off_u);
+        float v1 = (float)(dv + cell->h - cell->off_v);
+
+        xy[0] = x0;  xy[1] = y0;  uv[0] = u0;  uv[1] = v0;
+        xy[2] = x1;  xy[3] = y0;  uv[2] = u1;  uv[3] = v0;
+        xy[4] = x0;  xy[5] = y1;  uv[4] = u0;  uv[5] = v1;
+        xy[6] = x1;  xy[7] = y1;  uv[6] = u1;  uv[7] = v1;
+
+        ReiPan_RendererSetGs2dDepth(z);
+        ReiPan_RendererDrawFontQuadTex0(font_bank_host, (const sceGsTex0 *)&font_tex0_host,
+                                        (const sceGsTex1 *)GetGsRegCached(SCE_GS_TEX1_1),
+                                        xy, uv, (u_char)q[0], (u_char)q[1], (u_char)q[2], a);
+    }
+
+    return pbuf + 12;
+}
+
+// Glyph fn of `bank` at the record's pen, in its colour and alpha.
+// FF3 0x0020c7b8; FF2 SetMsgFont.
+
+static void SetMsgFont(u_long **ppbuf, DISP_STR *disp, int bank, u_char fn)
+{
+    *ppbuf = SetFontTex(*ppbuf, fntdat[bank].tex0, bank);
+    *ppbuf = SetFontPat(*ppbuf, 1, disp->pri, fn, disp->pos_x, disp->pos_y, (u_char)disp->r,
+                        (u_char)disp->g, (u_char)disp->b, (u_char)disp->alpha);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Records
+// ──────────────────────────────────────────────────────────────────────
+
+// FF3 0x0020c848; FF2 CopyStrDToStr.
+
+void CopyStrDToStr(DISP_STR *s, const STR_DAT *d)
+{
+    s->str    = d->str;
+    s->pos_x  = d->pos_x;
+    s->pos_y  = d->pos_y;
+    s->type   = d->type;
+    s->r      = d->r;
+    s->g      = d->g;
+    s->b      = d->b;
+    s->alpha  = d->alpha;
+    s->pri    = d->pri;
+    s->st     = 0;
+    s->x_wide = 0;
+    s->y_wide = 0;
+    s->csr    = 0;
+}
+
+// The record of one print: stream, pen, alpha, pri, colour label, extra
+// glyph / line spacing. FF3 0x0020cb70 (FF2 inlined this in each printer).
+
+void MsgDispStrInit(DISP_STR *disp, u_char *str, int x, int y, u_char col_label, int alpha,
+                    int pri, int x_wide, int y_wide)
+{
+    memset(disp, 0, sizeof(DISP_STR));
+    disp->str   = str;
+    disp->pos_x = x;
+    disp->pri   = (pri & 0xf) << 4;
+    disp->pos_y = y;
+    disp->alpha = alpha;
+    MsgColChange(disp, col_label);
+    disp->x_wide = x_wide;
+    disp->y_wide = y_wide;
+}
+
+// x is the line's right edge (1) or centre (2): move the pen to its left
+// end. Returns the pen x. FF3 0x0020caf0.
+
+int MsgSetArrange(DISP_STR *disp, int arrange)
+{
+    if (arrange == 1)
+    {
+        disp->pos_x = disp->pos_x - MsgGetLineWidth(disp->str, nullptr);
+    }
+    else if (arrange == 2)
+    {
+        disp->pos_x = disp->pos_x - MsgGetLineWidth(disp->str, nullptr) / 2;
+    }
+    return disp->pos_x;
+}
+
+// Colour label -> the record's colour; MSG_COL_CURRENT takes the current
+// colour. FF3 0x0020da30; FF2 MsgColChange (no current colour there).
+
+void MsgColChange(DISP_STR *disp, u_char col_label)
+{
+    if (col_label == MSG_COL_CURRENT)
+    {
+        MsgSetColorRGB(disp, msg_cur_col[0], msg_cur_col[1], msg_cur_col[2]);
+        return;
+    }
+    disp->b = msg_col[col_label].b;
+    disp->r = msg_col[col_label].r;
+    disp->g = msg_col[col_label].g;
+}
+
+// FF3 0x0020daa0.
+
+void MsgSetColorRGB(DISP_STR *disp, u_char r, u_char g, u_char b)
+{
+    disp->r = r;
+    disp->b = b;
+    disp->g = g;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Printing
+// ──────────────────────────────────────────────────────────────────────
+
+// The stream to its end, or to its first line break when one_line_flg is
+// set. Returns csr + 1. FF3 0x0020c8a8; FF2 PrintMsg (no SetFontEnv here:
+// the callers set the environment).
+
+int PrintMsg(DISP_STR *disp, int one_line_flg)
+{
+    MSG_EXE_CTRL ctrl;
+    u_long      *pbuf;
+    int          mask;
+
+    mask = 1;
+    if (one_line_flg == 0)
+    {
+        mask = 3;
+    }
+    MsgExeCtrlInit(disp, &ctrl, 0);
+    pbuf = (u_long *)StartDmaDirectTrans();
+    pbuf = SetFontTex(pbuf, fntdat[0].tex0, 0);
+    do
+    {
+    } while ((PrintMsgOneLine(disp, &ctrl, &pbuf) & mask) != 0);
+    EndDmaDirectTrans((qword *)pbuf);
+    return disp->csr + 1;
+}
+
+// FF3 0x0020c938.
+
+int PrintMsgZ(DISP_STR *disp, int one_line_flg)
+{
+    SetFontEnvZ();
+    return PrintMsg(disp, one_line_flg);
+}
+
+// One step of the stream: a control code or a glyph. Returns 0 at the end
+// (0xfb / 0xff), 2 after a line break, else 1. FF3 0x0020c970; FF2
+// PrintMsgOneLine (FF3: 9 banks, 0xf9 current colour, 0xfa arrange).
+
+static int PrintMsgOneLine(DISP_STR *disp, MSG_EXE_CTRL *ctrl, u_long **ppbuf)
+{
+    int draw;
+    int loop;
+
+    ctrl->now_bank = 0;
+    draw = 0;
+    loop = 1;
+    switch (*disp->str)
+    {
+    case 0xf0:
+    case 0xf1:
+    case 0xf2:
+    case 0xf3:
+    case 0xf4:
+    case 0xf5:
+    case 0xf6:
+    case 0xf7:
+    case 0xf8:
+        draw = 1;
+        MesBankExe(disp, ctrl);
+        break;
+    case MSG_CODE_CURCOL:
+        disp->str = disp->str + 1;
+        MsgSetColorRGB(disp, msg_cur_col[0], msg_cur_col[1], msg_cur_col[2]);
+        break;
+    case MSG_CODE_ARRANGE:
+        MesArrangeExe(disp, nullptr, ctrl);
+        break;
+    case MSG_CODE_PAGE:
+    case MSG_CODE_END:
+        loop = 0;
+        disp->str = disp->str + 1;
+        break;
+    case MSG_CODE_EXNUM:
+        MesExNumExe(disp, ctrl, ppbuf);
+        break;
+    case MSG_CODE_COL:
+        MesColExe(disp, ctrl);
+        break;
+    case MSG_CODE_RET:
+        loop = 2;
+        MesRetExe(disp, nullptr, ctrl);
+        break;
+    default:
+        draw = 1;
+        ctrl->font_pos = Get1Byte(disp->str);
+        disp->str = disp->str + 1;
+        break;
+    }
+    if (draw)
+    {
+        ctrl->font_w = GetFontSize((u_char)ctrl->now_bank, ctrl->font_pos);
+        SetMsgFont(ppbuf, disp, ctrl->now_bank, ctrl->font_pos);
+        disp->pos_x = disp->pos_x + ctrl->font_w + disp->x_wide;
+    }
+    return loop;
+}
+
+// One line of a stream at x, y (arranged), with the Z test.
+// FF3 0x0020cc30; FF2 PrintMsg_ArrangeOneLine.
+
+int PrintMsg_ArrangeOneLine(u_char *str, int x, int y, int col_label, int alpha, int pri,
+                            int x_wide, int y_wide, int arrange)
+{
+    DISP_STR disp;
+
+    MsgDispStrInit(&disp, str, x, y, (u_char)col_label, alpha, pri, x_wide, y_wide);
+    MsgSetArrange(&disp, arrange);
+    PrintMsgZ(&disp, 1);
+    return disp.csr + 1;
+}
+
+// A whole stream at x, y (arranged), without the Z test. The first line
+// sets the arrangement; later lines start at x. FF3 0x0020cca0.
+
+int MsgPrintData(u_char *str, int x, int y, int col_label, int alpha, int pri, int x_wide,
+                 int y_wide, int arrange)
+{
+    DISP_STR disp;
+
+    MsgDispStrInit(&disp, str, x, y, (u_char)col_label, alpha, pri, x_wide, y_wide);
+    MsgSetArrange(&disp, arrange);
+    SetFontEnv();
+    PrintMsg(&disp, 1);
+    return disp.csr + 1;
+}
+
+// The current page of message (type, id): the pages are the parts between
+// 0xfb codes; only the glyphs of page msg_page.page draw. Ends with the
+// page state 1 when a later page exists, 0 at the message end (which also
+// pulls an out-of-range page back by one). A different message than the
+// last one starts at page 0. Sends the font pages first. FF3 0x0020cd18.
+
+int MsgPrintPageMain(int msg_type, int msg_id, int x, int y, int col_label, int alpha,
+                     int pri, int x_wide, int y_wide, int arrange)
+{
+    DISP_STR     disp;
+    MSG_EXE_CTRL ctrl;
+    u_long      *pbuf;
+    int          loop;
+    int          draw;
+    u_char       page;
+
+    memset(&disp, 0, sizeof(disp));
+    MsgDispStrInit(&disp, GetMsgDataAddr(msg_type, msg_id), x, y, (u_char)col_label, alpha, pri,
+                   x_wide, y_wide);
+    loop = 1;
+    draw = 0;
+    page = 0;
+    MsgSetArrange(&disp, arrange);
+    MsgExeCtrlInit(&disp, &ctrl, 0);
+    FontTexSendVram();
+    SetFontEnvZ();
+    pbuf = (u_long *)StartDmaDirectTrans();
+    pbuf = SetFontTex(pbuf, fntdat[0].tex0, 0);
+    if (msg_page.msg != disp.str)
+    {
+        MsgPageReset();
+    }
+    msg_page.msg = disp.str;
+    do
+    {
+        ctrl.now_bank = 0;
+        switch (*disp.str)
+        {
+        case 0xf0:
+        case 0xf1:
+        case 0xf2:
+        case 0xf3:
+        case 0xf4:
+        case 0xf5:
+        case 0xf6:
+        case 0xf7:
+        case 0xf8:
+            MesBankExe(&disp, &ctrl);
+            draw = 1;
+            break;
+        case MSG_CODE_CURCOL:
+            disp.str = disp.str + 1;
+            MsgSetColorRGB(&disp, msg_cur_col[0], msg_cur_col[1], msg_cur_col[2]);
+            break;
+        case MSG_CODE_ARRANGE:
+            MesArrangeExe(&disp, nullptr, &ctrl);
+            break;
+        case MSG_CODE_PAGE:
+            disp.str = disp.str + 1;
+            page = (u_char)(page + 1);
+            disp.pos_x = ctrl.start_x;
+            disp.pos_y = ctrl.start_y;
+            if (msg_page.page < page)
+            {
+                loop = 0;
+                msg_page.state = 1;
+            }
+            break;
+        case MSG_CODE_EXNUM:
+            MesExNumExe(&disp, &ctrl, &pbuf);
+            break;
+        case MSG_CODE_COL:
+            MesColExe(&disp, &ctrl);
+            break;
+        case MSG_CODE_RET:
+            MesRetExe(&disp, nullptr, &ctrl);
+            break;
+        case MSG_CODE_END:
+            disp.str = disp.str + 1;
+            msg_page.page = (s_char)(msg_page.page - 1);
+            if (msg_page.page < 0)
+            {
+                msg_page.page = 0;
+            }
+            disp.pos_x = ctrl.start_x;
+            loop = 0;
+            disp.pos_y = ctrl.start_y;
+            msg_page.state = 0;
+            msg_page._06 = 0;
+            break;
+        default:
+            ctrl.font_pos = Get1Byte(disp.str);
+            disp.str = disp.str + 1;
+            draw = 1;
+            break;
+        }
+        if (msg_page.page == page && loop)
+        {
+            msg_page.state = 2;
+            if (draw)
+            {
+                ctrl.font_w = GetFontSize((u_char)ctrl.now_bank, ctrl.font_pos);
+                SetMsgFont(&pbuf, &disp, ctrl.now_bank, ctrl.font_pos);
+                disp.pos_x = disp.pos_x + ctrl.font_w + disp.x_wide;
+            }
+        }
+        draw = 0;
+    } while (loop);
+    EndDmaDirectTrans((qword *)pbuf);
+    return disp.csr + 1;
+}
+
+// FF3 0x0020d060.
+
+int MsgPrintPage(int msg_type, int msg_id, int x, int y, int col_label, int alpha, int pri,
+                 int x_wide, int y_wide, int arrange)
+{
+    SetFontEnv();
+    return MsgPrintPageMain(msg_type, msg_id, x, y, col_label, alpha, pri, x_wide, y_wide,
+                            arrange);
+}
+
+// FF3 0x0020d118.
+
+int MsgPrintPageZ(int msg_type, int msg_id, int x, int y, int col_label, int alpha, int pri,
+                  int x_wide, int y_wide)
+{
+    SetFontEnvZ();
+    return MsgPrintPageMain(msg_type, msg_id, x, y, col_label, alpha, pri, x_wide, y_wide, 0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Numbers
+// ──────────────────────────────────────────────────────────────────────
+
+// Up to 7 digits from x, no leading zeros; 0 prints nothing. FF3 0x0020d1d0;
+// FF2 PrintNumber (asserts dropped).
+
+void PrintNumber(int data, int x, int y, u_char col_label, u_char alpha, int pri, u_char type)
+{
+    int    i;
+    int    j;
+    int    ten_tmp;
+    u_char set_flg;
+    int    x_half;
+
+    set_flg = 0;
+    i = 7;
+    x_half = x;
+    do
+    {
+        i = i - 1;
+        ten_tmp = 1;
+        for (j = i; j > 0; j--)
+        {
+            ten_tmp = ten_tmp * 10;
+        }
+        if (data / ten_tmp != 0)
+        {
+            set_flg = 1;
+        }
+        if (set_flg)
+        {
+            if (type == 0)
+            {
+                PrintNumber_One(data / ten_tmp, x, y, col_label, alpha, pri, 0);
+            }
+            else if (type == 1)
+            {
+                PrintNumber_One(data / ten_tmp, x_half, y, col_label, alpha, pri, 1);
+            }
+            x_half = x_half + 0xc;
+            x = x + 0x18;
+        }
+    } while (0 < i);
+}
+
+// num digits from x. FF3 0x0020d308; FF2 PrintNumber_N (asserts dropped).
+
+void PrintNumber_N(int data, int num, int x, int y, u_char col_label, u_char alpha, int pri,
+                   u_char type, u_char zero_flg)
+{
+    int    i;
+    int    j;
+    int    ten_tmp;
+    u_char set_flg;
+    int    x_half;
+
+    set_flg = (zero_flg == 1);
+    x_half = x;
+    while (0 < num)
+    {
+        ten_tmp = 1;
+        i = num - 1;
+        for (j = i; j > 0; j--)
+        {
+            ten_tmp = ten_tmp * 10;
+        }
+        if (data / ten_tmp != 0)
+        {
+            set_flg = 1;
+        }
+        if (zero_flg == 0 && data == 0 && num == 1)
+        {
+            set_flg = 1;
+        }
+        if (set_flg)
+        {
+            if (type == 0)
+            {
+                PrintNumber_One(data / ten_tmp, x, y, col_label, alpha, pri, 0);
+            }
+            else if (type == 1)
+            {
+                PrintNumber_One(data / ten_tmp, x_half, y, col_label, alpha, pri, 1);
+            }
+        }
+        x_half = x_half + 0xe;
+        x = x + 0x12;
+        num = i;
+    }
+}
+
+// One digit (data % 10): full-width glyphs 0x35.. (type 0) or half-width
+// 0x3f.. (type 1), with the Z test. FF3 0x0020d460; FF2 PrintNumber_One.
+
+void PrintNumber_One(int data, int x, int y, u_char col_label, u_char alpha, int pri,
+                     u_char type)
+{
+    u_char   str[2];
+    DISP_STR disp;
+    u_char   em_size_tbl[10] = { 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e };
+    u_char   normal_tbl[10]  = { 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48 };
+
+    // PC: FF3 leaves the record (and str[0] for another type) uninitialised;
+    // nothing it leaves out is read for a single glyph.
+    memset(&disp, 0, sizeof(disp));
+    str[0] = 0;
+
+    disp.str = str;
+    if (type == 0)
+    {
+        str[0] = em_size_tbl[data % 10];
+    }
+    else if (type == 1)
+    {
+        str[0] = normal_tbl[data % 10];
+    }
+    disp.pri = (pri & 0xf) << 4;
+    str[1] = MSG_CODE_END;
+    disp.alpha = alpha;
+    disp.pos_x = x;
+    disp.pos_y = y;
+    MsgColChange(&disp, col_label);
+    PrintMsgZ(&disp, 0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Control codes
+// ──────────────────────────────────────────────────────────────────────
+
+// 0xf0..0xf8 <g>: glyph g of bank 1..9. FF3 0x0020d558; FF2 MesBankExe.
+
+static void MesBankExe(DISP_STR *disp, MSG_EXE_CTRL *ctrl)
+{
+    u_char bank_tbl[10] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    u_char b0;
+
+    b0 = Get1Byte(disp->str);
+    disp->str = disp->str + 1;
+    ctrl->font_pos = Get1Byte(disp->str);
+    ctrl->now_bank = bank_tbl[(u_char)(b0 + 0x11)];
+    disp->str = disp->str + 1;
+}
+
+// 0xfd <c>: colour label c. FF3 0x0020d5f0; FF2 MesColExe.
+
+static void MesColExe(DISP_STR *disp, MSG_EXE_CTRL *ctrl)
+{
+    u_char col_label;
+
+    disp->str = disp->str + 1;
+    col_label = Get1Byte(disp->str);
+    disp->str = disp->str + 1;
+    MsgColChange(disp, col_label);
+}
+
+// 0xfa <a> <?>: line arrangement against a window; without one (every FF3
+// print) the code and two bytes are skipped. FF3 0x0020d638; FF2
+// MesArrangeExe (FF2's code was 0xf9).
+
+static void MesArrangeExe(DISP_STR *disp, MSG_WIN_DAT *win, MSG_EXE_CTRL *ctrl)
+{
+    u_char *dat_addr;
+    float   off;
+
+    dat_addr = disp->str;
+    disp->str = dat_addr + 1;
+    if (win == nullptr)
+    {
+        disp->str = dat_addr + 3;
+        return;
+    }
+    ctrl->arrange = Get1Byte(dat_addr + 1);
+    disp->str = disp->str + 1;
+    if (ctrl->arrange == 2)
+    {
+        disp->pos_x = (int)((win->x + win->w * 0.5f) - (float)(MsgGetLineWidth(disp->str, nullptr) / 2));
+    }
+    else if (ctrl->arrange == 1)
+    {
+        off = win->x - (float)ctrl->start_x;
+        disp->pos_x = (int)(((float)ctrl->start_x + win->w + off + off)
+                            - (float)MsgGetLineWidth(disp->str, nullptr));
+    }
+    else if (ctrl->arrange == 0)
+    {
+        disp->pos_x = ctrl->start_x;
+    }
+}
+
+// 0xfe: line break: back to the line start (or the window arrangement),
+// then down by font_h + y_wide (or left, vertical text). FF3 0x0020d750;
+// FF2 MesRetExe.
+
+static void MesRetExe(DISP_STR *disp, MSG_WIN_DAT *win, MSG_EXE_CTRL *ctrl)
+{
+    u_char *msg_addr;
+    u_char  disp_type;
+    float   off;
+
+    msg_addr = disp->str + 1;
+    disp->str = msg_addr;
+    if (win == nullptr)
+    {
+        disp_type = ctrl->disp_type;
+        if (disp_type == 0)
+        {
+            disp->pos_x = ctrl->start_x;
+            disp_type = ctrl->disp_type;
+        }
+        else if (disp_type == 1)
+        {
+            disp->pos_y = ctrl->start_y;
+            disp_type = ctrl->disp_type;
+        }
+    }
+    else
+    {
+        disp_type = ctrl->arrange;
+        if (disp_type == 2)
+        {
+            disp->pos_x = (int)((win->x + win->w * 0.5f) - (float)(MsgGetLineWidth(msg_addr, nullptr) / 2));
+            disp_type = ctrl->disp_type;
+        }
+        else if (disp_type == 1)
+        {
+            off = win->x - (float)ctrl->start_x;
+            disp->pos_x = (int)(((float)ctrl->start_x + win->w + off + off)
+                                - (float)MsgGetLineWidth(msg_addr, nullptr));
+            disp_type = ctrl->disp_type;
+        }
+        else if (disp_type == 0)
+        {
+            disp->pos_x = ctrl->start_x;
+            disp_type = ctrl->disp_type;
+        }
+        else
+        {
+            disp_type = ctrl->disp_type;
+        }
+    }
+    if (disp_type == 0)
+    {
+        disp->pos_y = disp->pos_y + ctrl->font_h + disp->y_wide;
+    }
+    else if (disp_type == 1)
+    {
+        disp->pos_x = disp->pos_x - (ctrl->font_w + disp->x_wide);
+    }
+}
+
+// 0xfc <n>: the number mes_ex_num_tbl[n] returns, as half-width digits of
+// the current bank. FF3 0x0020d8b0; FF2 MesExNumExe.
+
+static void MesExNumExe(DISP_STR *disp, MSG_EXE_CTRL *ctrl, u_long **ppbuf)
+{
+    static const u_char normal_tbl[10] =            /* data 0x35c7a0 */
+        { 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48 };
+    char   cwo[256];
+    int    num;
+    int    i;
+    u_char ex;
+
+    disp->str = disp->str + 1;
+    ex = Get1Byte(disp->str);
+    disp->str = disp->str + 1;
+    num = 0;
+    // FF3 tests mes_ex_num_tbl[ex] (reading past the one entry) before
+    // ex == 0; only entry 0 is ever called, so only it is read here.
+    if (ex == 0 && mes_ex_num_tbl[0] != nullptr)
+    {
+        num = mes_ex_num_tbl[0]();
+    }
+    sprintf(cwo, "%d", num);
+    for (i = 0; cwo[i] != '\0'; i++)
+    {
+        ctrl->font_pos = normal_tbl[cwo[i] - '0'];
+        ctrl->font_w = GetFontSize((u_char)ctrl->now_bank, ctrl->font_pos);
+        SetMsgFont(ppbuf, disp, ctrl->now_bank, ctrl->font_pos);
+        if (ctrl->disp_type == 0)
+        {
+            disp->pos_x = disp->pos_x + ctrl->font_w + disp->x_wide;
+        }
+        else if (ctrl->disp_type == 1)
+        {
+            disp->pos_y = disp->pos_y + ctrl->font_h + disp->y_wide;
+        }
+    }
+}
+
+// The memory card slot (1, 2; 0 for none). FF3 0x0020da10 (Ghidra had it
+// inside MesExNumExe); FF2 GetAccessMcSlot_Msg.
+
+static int GetAccessMcSlot_Msg(void)
+{
+    return GetAccessMemoryCardPort() + 1;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Pages
+// ──────────────────────────────────────────────────────────────────────
+
+// Page breaks (0xfb) in message (type, id). FF3 0x0020dac0 (0xfc counts as
+// three bytes here, two when printed).
+
+int MsgGetPageBreakNum(int msg_type, int msg_id)
+{
+    u_char *p;
+    int     loop;
+    int     num;
+
+    p = GetMsgDataAddr(msg_type, msg_id);
+    loop = 1;
+    num = 0;
+    while (loop)
+    {
+        switch (*p)
+        {
+        case 0xf0:
+        case 0xf1:
+        case 0xf2:
+        case 0xf3:
+        case 0xf4:
+        case 0xf5:
+        case 0xf6:
+        case 0xf7:
+        case 0xf8:
+        case MSG_CODE_ARRANGE:
+        case MSG_CODE_COL:
+            p = p + 2;
+            break;
+        case MSG_CODE_PAGE:
+            p = p + 1;
+            num = num + 1;
+            break;
+        case MSG_CODE_EXNUM:
+            p = p + 3;
+            break;
+        case MSG_CODE_END:
+            p = p + 1;
+            loop = 0;
+            break;
+        default:
+            p = p + 1;
+            break;
+        }
+    }
+    return num;
+}
+
+// FF3 0x0020db48.
+
+int MsgGetPage(void)
+{
+    return msg_page.page;
+}
+
+// FF3 0x0020db58.
+
+void MsgPageReset(void)
+{
+    msg_page.page = 0;
+}
+
+// FF3 0x0020db68.
+
+void MsgSetPage(signed char page)
+{
+    msg_page.page = page;
+}
+
+// FF3 0x0020db80.
+
+void MsgPageNext(void)
+{
+    if (msg_page.state == 1)
+    {
+        msg_page.page = (s_char)(msg_page.page + 1);
+    }
+}
+
+// FF3 0x0020dbb0.
+
+void MsgPagePrev(void)
+{
+    if (msg_page.state == 1)
+    {
+        msg_page.page = (s_char)(msg_page.page - 1);
+        if (msg_page.page < 0)
+        {
+            msg_page.page = 0;
+        }
+    }
+}
+
+// FF3 0x0020de28.
+
+int MsgIsPageWait(void)
+{
+    return msg_page.state;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Message data
+// ──────────────────────────────────────────────────────────────────────
+
+// Pixel width of the line at str: glyph advances (0xfc numbers included)
+// up to a line break (*next = the next line) or the end (*next = null).
+// FF3 0x0020dbf0; FF2 GetMsgLineLength (0xf9 is one byte in FF3).
+
+int MsgGetLineWidth(u_char *str, u_char **next)
+{
+    u_char bank_tbl[10] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    static const u_char normal_tbl[10] =            /* data 0x35c800 */
+        { 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48 };
+    char   cwo[256];
+    int    width;
+    int    loop;
+    int    draw;
+    int    num;
+    int    i;
+    u_char bank;
+    u_char fn;
+    u_char ex;
+
+    width = 0;
+    loop = 1;
+    draw = 0;
+    fn = 0;
+    num = 0;
+    do
+    {
+        bank = 0;
+        switch (*str)
+        {
+        case 0xf0:
+        case 0xf1:
+        case 0xf2:
+        case 0xf3:
+        case 0xf4:
+        case 0xf5:
+        case 0xf6:
+        case 0xf7:
+        case 0xf8:
+            draw = 1;
+            bank = Get1Byte(str);
+            str = str + 1;
+            fn = Get1Byte(str);
+            str = str + 1;
+            bank = bank_tbl[(u_char)(bank + 0x11)];
+            break;
+        case MSG_CODE_CURCOL:
+            str = str + 1;
+            break;
+        case MSG_CODE_ARRANGE:
+        case MSG_CODE_COL:
+            str = str + 2;
+            break;
+        case MSG_CODE_PAGE:
+        case MSG_CODE_END:
+            if (next != nullptr)
+            {
+                *next = nullptr;
+            }
+            loop = 0;
+            break;
+        case MSG_CODE_EXNUM:
+            str = str + 1;
+            ex = Get1Byte(str);
+            str = str + 1;
+            // See MesExNumExe on the table test.
+            if (ex == 0 && mes_ex_num_tbl[0] != nullptr)
+            {
+                num = mes_ex_num_tbl[0]();
+            }
+            sprintf(cwo, "%d", num);
+            for (i = 0; cwo[i] != '\0'; i++)
+            {
+                width = width + GetFontSize(0, normal_tbl[cwo[i] - '0']);
+            }
+            break;
+        case MSG_CODE_RET:
+            if (next != nullptr)
+            {
+                *next = str + 1;
+            }
+            loop = 0;
+            break;
+        default:
+            draw = 1;
+            fn = Get1Byte(str);
+            str = str + 1;
+            break;
+        }
+        if (draw)
+        {
+            width = width + GetFontSize(bank, fn);
+        }
+        draw = 0;
+    } while (loop);
+    return width;
+}
+
+// Advance of glyph fn in `bank`. FF3 0x0020ddf8; FF2 GetFontSize (a
+// switch over 5 tables there).
+
+u_char GetFontSize(u_char bank, u_char fn)
+{
+    return (u_char)font_w_tbl[bank][fn];
+}
+
+// Message `msg_id` of group `msg_type` in the loaded MSG_OBJ: two tables of
+// offsets from the data start. FF3 0x0020de38; FF2 GetMsgDataAddr (asserts
+// dropped, data at 0xfed000 instead of 0xd9ec00).
+
+u_char *GetMsgDataAddr(int msg_type, int msg_id)
+{
+    u_char *top = (u_char *)ReiPan_GetHostPointer(MSG_DATA_ADRS);
+    u_char *addr;
+
+    addr = EvBinChangeAddr4(top, top + msg_type * 4);
+    return EvBinChangeAddr4(top, addr + msg_id * 4);
+}
+
+// FF3 0x0020dea8.
+
+void MsgSetSubtractMode(u_char on)
+{
+    msg_subtract = on;
+}
+
+// The colour of label MSG_COL_CURRENT. FF3 0x0020deb8.
+
+void SetCurColorRGB(u_char r, u_char g, u_char b)
+{
+    msg_cur_col[1] = g;
+    msg_cur_col[2] = b;
+    msg_cur_col[0] = r;
+}
+
+// FF3 0x0020dee0 (inferred in mission_ctl.c before; it loads this file's data).
+
+void LangDataLoadReq(void)
+{
+    LoadReq(MSG_OBJ + GetSysWrk()->GetLanguage(), ReiPan_GetHostPointer(MSG_DATA_ADRS));
+}

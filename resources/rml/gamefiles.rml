@@ -1,0 +1,43 @@
+<rml>
+<head>
+    <title>Game Files</title>
+    <link type="text/rcss" href="theme.rcss"/>
+    <link type="text/rcss" href="gamefiles.rcss"/>
+</head>
+<body id="gamefiles">
+    <div id="ground"></div>
+    <div id="bloom"></div>
+    <div id="ghost"></div>
+    <div id="film"></div>
+    <img id="emblem" src="images/emblem.png"/>
+    <div id="frame" class="window">
+        <div class="window-bar top"></div>
+        <div class="band"><h1 class="title">Game Files Not Found</h1></div>
+        <p id="lead">ReiPan does not include the game. Choose your own copy of Fatal Frame III: The Tormented and ReiPan will remember where it is.</p>
+        <p id="release">European version only: Project Zero 3 (SLES-53825)</p>
+        <div id="kinds">
+            <div class="kind">
+                <p class="kind-name">Disc image</p>
+                <p class="kind-file">.iso</p>
+                <p class="kind-note">A copy of your game disc. ReiPan plays straight from it.</p>
+            </div>
+            <div class="kind">
+                <p class="kind-name">Files from the disc</p>
+                <p class="kind-file">IMG_BD.BIN</p>
+                <p class="kind-note">The game's data, copied to any folder with ZERO3.FHD beside it.</p>
+            </div>
+        </div>
+        <div id="actions">
+            <div id="choose" class="action selected">Choose Game File</div>
+            <div id="quit" class="action">Exit Game</div>
+        </div>
+        <div id="status">
+            <p id="status-text"></p>
+            <p id="status-file"></p>
+        </div>
+        <div class="window-bar bottom"></div>
+    </div>
+    <div id="prompts" class="prompts"></div>
+    <div id="veil"></div>
+</body>
+</rml>

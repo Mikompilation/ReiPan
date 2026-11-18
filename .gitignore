@@ -1,0 +1,20 @@
+# Game executables and data are not distributed; dump them from your own disc.
+SLES_538.25
+SLES_538.25.bak
+*.ISO
+*.iso
+
+# Regenerated reversing intermediates (Ghidra dumps, features, snapshots)
+tools/reverse/work/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE state (Visual Studio keeps its index files locked; tus.py finish runs git add -A)
+.vs/
+
+# Build trees
+cmake-build-*/
+build/
+out/

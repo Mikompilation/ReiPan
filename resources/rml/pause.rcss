@@ -1,0 +1,53 @@
+/*
+ * The pause screen: the game's own pause window (PAUSE_PHF), where its
+ * layout menu sits on the 640x448 screen -- the jade hemp-leaf band with
+ * "Pause" in it over a short column of choices, the cursor a cold teal glow
+ * -- with the button prompts at the top right, where the game puts them.
+ */
+
+#panel
+{
+    position: absolute;
+    left: 50%;
+    top: 104dp;
+    width: 276dp;
+    margin-left: -138dp;
+    text-align: center;
+    animation: 0.2s quadratic-out rise-in;
+}
+
+#panel .band .title
+{
+    font-size: 22dp;
+    line-height: 30dp;
+}
+
+#items
+{
+    padding: 14dp 0 16dp;
+}
+
+.item
+{
+    height: 30dp;
+    line-height: 30dp;
+    font-size: 16dp;
+    letter-spacing: 1dp;
+    color: #a59a9e;
+    cursor: pointer;
+}
+
+/* Centred, so the glow is the one that fades both ways. */
+.item.selected
+{
+    border-left-color: #00000000;
+    decorator: image(images/cursor_bar.png);
+    color: #9ee0da;
+}
+
+#prompts
+{
+    position: absolute;
+    right: 24dp;
+    top: 20dp;
+}

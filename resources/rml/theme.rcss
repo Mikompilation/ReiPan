@@ -1,0 +1,296 @@
+/*
+ * The menus' shared look: Fatal Frame III's.
+ *
+ * Taken from the game's own menu art (MENUBG_PHF, MENUTOP_PHF, PAUSE_PHF and
+ * the OPTION_*_PHF layouts; tools/reverse/tm2png.py shows them) and the text
+ * colours its menus print in (SetCurColorRGB): a cold slate-blue night, ink
+ * frames round steel-blue wells, pale lettering, sage for what is not under
+ * the cursor, and the cursor a smoky cream sheen between two rose-bronze
+ * rails.  The jade of the pause window's hemp-leaf band glows round a title.
+ * Film grain lies over everything.
+ *
+ *   snow       #e4e6dc   the menus' pale lettering: body text
+ *   lit        #f6f2e2   the cursor's row
+ *   sage       #8d9780   help, rows at rest (the difficulty list's own)
+ *   frost      #4e5a58   disabled
+ *   void       #070a0d   the deepest night
+ *   night      #0d151b   panels
+ *   slot       #13202a   wells: keys, slider tracks (the option slots)
+ *   steel      #2f4650   a well with the cursor
+ *   ink        #2a3d48   frames and rules at rest
+ *   silver     #8e989c   frames (the option panel's washi paper)
+ *   cream      #d8ccb0   the cursor's sheen and frames
+ *   bronze     #a08070   the cursor's rails
+ *   gold       #f1d69b   the in-game menus' lit item: notes, warnings
+ *   jade       #2f8a70   a title's glow, section headings
+ *
+ * Sizes are in dp, and one dp is one pixel of the PS2's 640x448 screen scaled
+ * to the game picture (reipan_rmlui.h), so a layout here is a layout on the
+ * original screen.
+ */
+
+body
+{
+    width: 100%;
+    height: 100%;
+    font-family: "Crimson Text";
+    font-size: 13dp;
+    color: #e4e6dc;
+}
+
+div, p, h1, h2
+{
+    display: block;
+}
+
+.hidden
+{
+    display: none;
+}
+
+/* Over the game: a slate-blue wash, darker at the edges, and grain on top --
+ * the menu background's own night (mnbg1_sitaji). */
+.backdrop
+{
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #0a1016b8;
+    decorator: image(images/vignette.png), image(images/grain.png repeat);
+}
+
+/* Only the darkening the game's pause gives the frame under it (pause.c:
+ * the captured screen at about 60%). */
+.backdrop.dim
+{
+    background-color: #02040666;
+    decorator: none;
+}
+
+/* ---- the game's window (PAUSE_PHF, wdw_YN) ---------------------------- */
+
+/* Black, between steel-blue sides, with a silver-blue bar across its top
+ * and its bottom that runs out past the sides. */
+.window
+{
+    background-color: #020406f0;
+    border-left: 3dp #3f5d68;
+    border-right: 3dp #3f5d68;
+}
+
+.window-bar
+{
+    position: absolute;
+    left: -10dp;
+    right: -10dp;
+    height: 3dp;
+    background-color: #547481;
+    border-top: 1dp #bbced3;
+}
+
+.window-bar.top
+{
+    top: -4dp;
+}
+
+.window-bar.bottom
+{
+    bottom: -4dp;
+}
+
+/* The jade hemp-leaf band along a window's top, a title in it. */
+.band
+{
+    height: 30dp;
+    text-align: center;
+    border-bottom: 1dp #7da2a1;
+    decorator: image(images/asanoha_band.png);
+}
+
+/* The game's titles are pale italic script with a soft halo ("Pause",
+ * "Options", "Menu"). */
+.title
+{
+    font-size: 26dp;
+    font-style: italic;
+    letter-spacing: 1dp;
+    color: #eef1e4;
+    font-effect: glow(1dp 5dp 0dp 1dp #2f8a7099);
+}
+
+.rule
+{
+    height: 6dp;
+    decorator: image(images/rule.png);
+}
+
+/* ---- the cursor ------------------------------------------------------- */
+
+/* Anything that can hold the cursor.  The sheen is an image rather than a
+ * gradient so it can fall off vertically as well as along the row, the way
+ * the game's own highlight does. */
+.selectable
+{
+    padding: 0 10dp;
+    border-left: 2dp #00000000;
+}
+
+.selectable.selected
+{
+    border-left-color: #d8ccb0;
+    decorator: image(images/cursor_glow.png);
+    color: #f6f2e2;
+}
+
+.selectable.disabled
+{
+    color: #4e5a58;
+}
+
+.selectable.disabled.selected
+{
+    border-left-color: #2a3d48;
+}
+
+/* ---- button prompts --------------------------------------------------- */
+
+.prompts
+{
+    text-align: right;
+    font-size: 11dp;
+    font-style: italic;
+    color: #8d9780;
+}
+
+.prompt
+{
+    display: inline-block;
+    margin-left: 14dp;
+    cursor: pointer;
+}
+
+.prompt:hover
+{
+    color: #e4e6dc;
+}
+
+.key
+{
+    display: inline-block;
+    padding: 0 4dp;
+    margin-right: 4dp;
+    border: 1dp #5d6c70;
+    background-color: #13202a;
+    color: #e4e6dc;
+    font-style: normal;
+    font-weight: bold;
+    font-size: 9.5dp;
+}
+
+/* ---- the yes / no window ---------------------------------------------- */
+
+/* The game's own window (wdw_YN), the cursor its teal glow. */
+.confirm
+{
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #070a0d99;
+}
+
+.confirm-box
+{
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 300dp;
+    margin-left: -150dp;
+    margin-top: -48dp;
+    padding: 16dp 20dp 14dp;
+    text-align: center;
+    animation: 0.15s quadratic-out fade-in;
+}
+
+.confirm-text
+{
+    margin-bottom: 4dp;
+    font-size: 14dp;
+}
+
+.confirm-note
+{
+    margin-bottom: 14dp;
+    font-size: 11dp;
+    font-style: italic;
+    color: #f1d69b;
+}
+
+.confirm-choices
+{
+    text-align: center;
+}
+
+.confirm-choice
+{
+    display: inline-block;
+    width: 70dp;
+    margin: 0 8dp;
+    padding: 2dp 0;
+    text-align: center;
+    cursor: pointer;
+}
+
+/* Centred, so the glow that fades both ways. */
+.confirm-choice.selected
+{
+    border-left-color: #00000000;
+    decorator: image(images/cursor_bar.png);
+    color: #9ee0da;
+}
+
+/* ---- scrolling -------------------------------------------------------- */
+
+scrollbarvertical
+{
+    width: 3dp;
+    margin-left: 4dp;
+}
+
+scrollbarvertical slidertrack
+{
+    background-color: #13202a;
+}
+
+scrollbarvertical sliderbar
+{
+    background-color: #2f4650;
+}
+
+scrollbarvertical sliderbar:hover,
+scrollbarvertical sliderbar:active
+{
+    background-color: #8e989c;
+}
+
+scrollbarvertical sliderarrowdec,
+scrollbarvertical sliderarrowinc
+{
+    width: 0;
+    height: 0;
+}
+
+@keyframes fade-in
+{
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes rise-in
+{
+    from { opacity: 0; transform: translateY(6dp); }
+    to   { opacity: 1; transform: translateY(0dp); }
+}
