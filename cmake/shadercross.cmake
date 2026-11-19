@@ -93,10 +93,6 @@ else()
     set(_shadercross_platform linux)
 endif()
 set(REIPAN_SHADERCROSS_DIR ${CMAKE_SOURCE_DIR}/extern/shadercross/${_shadercross_platform})
-# As with FFmpeg, ReiPan does not commit the prebuilt CLI; fall back to MioPan's.
-if(NOT EXISTS ${REIPAN_SHADERCROSS_DIR} AND EXISTS ${REIPAN_SIBLING_EXTERN}/shadercross/${_shadercross_platform})
-    set(REIPAN_SHADERCROSS_DIR ${REIPAN_SIBLING_EXTERN}/shadercross/${_shadercross_platform})
-endif()
 
 # IMPORTANT: do NOT pre-seed SHADERCROSS_EXECUTABLE with an empty cache value.
 # find_program() only re-searches when the result holds a *-NOTFOUND value; an

@@ -24,16 +24,6 @@ set(BUILD_SHARED_LIBS OFF)
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/ReiPan)
 
-# The prebuilt FFmpeg and shadercross trees are not committed here; when extern/ lacks
-# them, cmake/ffmpeg.cmake and cmake/shadercross.cmake reuse a sibling MioPan checkout's.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../MioPan/extern")
-    set(_reipan_sibling_extern "${CMAKE_CURRENT_SOURCE_DIR}/../MioPan/extern")
-else()
-    set(_reipan_sibling_extern "${CMAKE_CURRENT_SOURCE_DIR}/../MioPan-Mikompilation/extern")
-endif()
-set(REIPAN_SIBLING_EXTERN "${_reipan_sibling_extern}"
-        CACHE PATH "extern/ of a MioPan checkout, used for FFmpeg/shadercross when ReiPan has none.")
-
 include(sdl3)
 include(spdlog)
 include(cglm)
@@ -80,13 +70,14 @@ target_link_libraries(ReiPan PRIVATE
     RmlUi::RmlUi
 )
 
-# The MPEG-2 decoder behind sceMpegGetPicture(); see cmake/ffmpeg.cmake. Without the
-# Windows prebuilt tree, movies play audio over a black screen. Linux builds
-# FFmpeg from source automatically.
+# The MPEG-2 decoder behind sceMpegGetPicture(); see cmake/ffmpeg.cmake.  When
+# Windows prebuilt tree is absent the decoder compiles out. Other hosts
+# build FFmpeg from source.
 if(REIPAN_HAVE_FFMPEG)
     target_compile_definitions(ReiPan PRIVATE REIPAN_HAVE_FFMPEG=1)
     target_include_directories(ReiPan PRIVATE "${FFMPEG_INCLUDE_DIR}")
     target_link_libraries(ReiPan PRIVATE avcodec avutil swscale)
+    # The import libraries resolve against DLLs that must sit next to the exe.
     if(WIN32)
         add_custom_command(TARGET ReiPan POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory

@@ -12,16 +12,10 @@
 # sdk/libmpeg.cpp is a full PSS demultiplexer already, so avcodec is fed raw
 # elementary-stream bytes, and the audio is plain PCM that needs no resampling.
 #
-# Windows uses a prebuilt tree under extern/ffmpeg or the sibling MioPan.
-# Other hosts build a minimal static MPEG-2 decoder from source.
+# Windows uses the prebuilt tree under extern/ffmpeg. Other hosts build a
+# static decoder from source, following MikuPan's build.
 
-# ReiPan does not commit the 143 MB prebuilt tree; without one under extern/ it
-# reuses the sibling MioPan checkout's (REIPAN_SIBLING_EXTERN, set in CMakeLists).
-set(_reipan_ffmpeg_default "${CMAKE_SOURCE_DIR}/extern/ffmpeg")
-if(NOT EXISTS "${_reipan_ffmpeg_default}/include/libavcodec/avcodec.h")
-    set(_reipan_ffmpeg_default "${REIPAN_SIBLING_EXTERN}/ffmpeg")
-endif()
-set(REIPAN_FFMPEG_ROOT "${_reipan_ffmpeg_default}"
+set(REIPAN_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/extern/ffmpeg"
         CACHE PATH "Root of the prebuilt FFmpeg tree (include/, lib/, bin/).")
 
 set(REIPAN_FFMPEG_LIBS avcodec avutil swscale)

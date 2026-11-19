@@ -6,9 +6,7 @@ Fatal Frame 3 PC Port
 Requires a C/C++ compiler, CMake, Make, Git and SDL3's system development
 packages. Dependencies are fetched automatically. Linux builds a minimal static
 FFmpeg (MPEG-2 decoder, parser and colour conversion); movie demuxing and PCM
-audio are handled by the game. Windows uses prebuilt FFmpeg from `extern/ffmpeg`
-or the sibling MioPan checkout. Without those Windows binaries, movies play
-audio over a black screen.
+audio are handled by the game. Windows uses prebuilt FFmpeg from `extern/ffmpeg`.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
