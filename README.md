@@ -63,12 +63,6 @@ equivalent and is left unobtained when exporting from ReiPan.
 
 ## Font texture replacements
 
-Export the original atlases with Python 3:
-
-```sh
-python3 tools/export_fonts.py --iso path/to/game.iso --out font-originals
-```
-
 Redraw or upscale the PNGs uniformly up to 4×, preserving glyph layout, colours
 and transparency. Copy the hash-named directory into `resources/fonts/` beside
 the executable and restart. Enable **HD fonts (if available)** in Renderer or
