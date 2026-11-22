@@ -185,6 +185,41 @@ int ReiPan_ConfigTitleSceneText(int scene, char *buf, int size);
  * number of scenes taken; 0 changes nothing. */
 int ReiPan_ConfigTitlePaste(const char *text, int replace);
 
+/*
+ * The over-the-shoulder camera (gameplay/reipan_over_shoulder.h), section
+ * [over_shoulder_camera].  Distances in world units (Rei stands about 27
+ * tall).  Every field is 4 bytes, so the overlay's settle-and-save compare can
+ * memcmp it.
+ */
+typedef struct ReiPan_ConfigCamera
+{
+    int   over_shoulder;     /* 0 the game's fixed cameras                  */
+    int   side_left;         /* the left shoulder instead of the right      */
+    int   collision;         /* pull in against the drawn scenery           */
+    int   auto_follow;       /* drift back behind her while she walks       */
+    int   invert_y;          /* on top of the game's own "Point of view"    */
+    int   scare_camera;      /* REIPAN_OTS_SCARE_*, written by name         */
+    float distance;
+    float height;
+    float side;
+    float fov;               /* degrees, vertical                           */
+    float sensitivity;
+    float smoothing;
+} ReiPan_ConfigCamera;
+
+/*
+ * The mouse in play (io/reipan_game_mouse.h), section [mouse]: looking, its
+ * speed, how the Camera Obscura button works and which control each action is
+ * on (REIPAN_MOUSE_SRC_*, written by name).  Every field is 4 bytes.
+ */
+typedef struct ReiPan_ConfigMouse
+{
+    int   look;
+    float sensitivity;
+    int   camera_toggle;     /* 0 hold, 1 toggle                            */
+    int   bind[5];           /* REIPAN_MOUSE_ACT_* order                    */
+} ReiPan_ConfigMouse;
+
 typedef struct ReiPan_Config
 {
     /* Order matters: reipan_config.cpp's defaults are a positional
@@ -194,6 +229,9 @@ typedef struct ReiPan_Config
     ReiPan_ConfigTitle    title;
     int profiler_summary;
     int profiler_fps_only;
+    ReiPan_ConfigCamera   camera;
+    ReiPan_ConfigMouse    mouse;
+    int overlay_menu_bar;    /* the overlay's bar is up (F1), [overlay]     */
 } ReiPan_Config;
 
 extern ReiPan_Config reipan_config;

@@ -149,7 +149,7 @@ void MyTransEEWait(uintptr_t iop_buf, uintptr_t ee_buf, unsigned int size)
     FlushDcache();
 
     CpuSuspendIntr(&old);
-    sceSifSetDmaIntr(&dat, 1, _intr_SifSetDma, &sif_dma_sema);
+    sceSifSetDmaIntr(&dat, 1, (void *)_intr_SifSetDma, &sif_dma_sema);
     CpuResumeIntr(old);
 
     WaitSema(sif_dma_sema);
@@ -173,7 +173,7 @@ int ReferSemaNowCount(int sema_id)
 void MyCdRead(unsigned int start_sector, unsigned int n_sector, void *buf)
 {
     int        count = 0;
-    sceCdRMode crm   = { 0, cd_read_mode, 0, 0 };
+    sceCdRMode crm   = { 0, (u_char)cd_read_mode, 0, 0 };
 
     /* Drain any completion left over from a read that was declared hung:
      * iopCommand() signals sema_Sync_CD itself when CD_Abort_count runs out,
@@ -798,10 +798,6 @@ void iopReqRead(unsigned int offset_sector, unsigned int read_sector_num,
     iop_read_wrk.buf             = buf;
     iop_read_wrk.pname           = pname;
 
-    /* Drain first: an aborted read still ends up signalling this. */
-    while (PollSema(read_end_sema) != KE_SEMA_ZERO)
-        ;
-
     /* PORT: was StartThread(iop_read_th_idx, 0).  sceCdRead() is a synchronous
      * host read that fires cdvd_callback() -- and so signals sema_Sync_CD --
      * before it returns, so MyCdRead()'s wait is already satisfied on arrival
@@ -816,12 +812,21 @@ void iopReqRead(unsigned int offset_sector, unsigned int read_sector_num,
      * for good.  The 10 ms grace period in ReiPan_IopStartThread() existed only
      * to narrow that window.
      *
-     * The semaphore accounting is unchanged: iopReadOnce() signals
-     * read_end_sema and puts sema_CD back, and the WaitSema() below consumes
-     * the one it just posted. */
-    iopReadOnce();
+     * PORT: and no read_end_sema handshake either.  iopReadOnce() posts
+     * read_end_sema and then puts sema_CD back, so the caller only collected
+     * its completion after the mutex was already free -- and the next caller,
+     * on another host thread (two stream slots, the file loader), took
+     * sema_CD and drained read_end_sema first, swallowing it.  The first
+     * caller then waited on read_end_sema for ever, outside any stop check:
+     * its stream slot's read thread never exited, StreamAbort() abandoned the
+     * slot, and every later stream on it -- a scene's audio among them --
+     * never started, so the scene waited on silence behind a black screen.
+     * The read is synchronous and the caller holds sema_CD throughout, so the
+     * mutex alone is the whole protocol. */
+    MyCdRead(iop_read_wrk.offset_sector, iop_read_wrk.read_sector_num,
+             iop_read_wrk.buf);
 
-    WaitSema(read_end_sema);
+    SignalSema(sema_CD);
 }
 
 /* The reader thread.  It exits after one read, and iopReqRead() starts it
@@ -919,7 +924,7 @@ static void *iopCommandQuery(unsigned int command, void *data, int size)
         /* Clears the transfer status the EE left behind, then puts the
          * module's own completion handler back before releasing the core. */
         sceSdVoiceTransStatus(core, 1);
-        sceSdSetTransIntrHandler(core, _intr_SignalTransCore, 0);
+        sceSdSetTransIntrHandler(core, (void *)_intr_SignalTransCore, 0);
         SignalSpuTransSema(core);
         break;
     }

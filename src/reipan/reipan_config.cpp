@@ -4,6 +4,8 @@
 #include "io/reipan_input.h"
 #include "io/reipan_paths.h"
 #include "rendering/reipan_renderer.h"
+#include "gameplay/reipan_over_shoulder.h"
+#include "io/reipan_game_mouse.h"
 
 #include <SDL3/SDL_log.h>
 #include <SDL3/SDL_stdinc.h>
@@ -137,6 +139,34 @@ ReiPan_Config reipan_config = {
     },
     /* .profiler_summary = */ 0,
     /* .profiler_fps_only = */ 0,
+    /* .camera = */ {
+        /* Off: the fixed angles are the game as it was made. */
+        /* .over_shoulder     = */ 0,
+        /* .side_left         = */ 0,
+        /* .collision         = */ 1,
+        /* .auto_follow       = */ 1,
+        /* .invert_y          = */ 0,
+        /* .scare_camera      = */ REIPAN_OTS_SCARE_GUIDED,
+        /* The framing the first play-test settled on. */
+        /* .distance          = */ 25.0f,
+        /* .height            = */ 26.0f,
+        /* .side              = */ 3.5f,
+        /* .fov               = */ 60.0f,
+        /* .sensitivity       = */ 1.0f,
+        /* .smoothing         = */ 0.3f,
+    },
+    /* .mouse = */ {
+        /* MikuPan's: look on, right raises the Camera Obscura while held,
+         * left the shutter, middle the lens shot, the wheel the film. */
+        /* .look              = */ 1,
+        /* .sensitivity       = */ 1.0f,
+        /* .camera_toggle     = */ 0,
+        /* .bind              = */ { REIPAN_MOUSE_SRC_RIGHT, REIPAN_MOUSE_SRC_LEFT,
+                                     REIPAN_MOUSE_SRC_MIDDLE, REIPAN_MOUSE_SRC_WHEEL_UP,
+                                     REIPAN_MOUSE_SRC_WHEEL_DOWN },
+    },
+    /* Up on a first run, so the settings are there to be found. */
+    /* .overlay_menu_bar = */ 1,
 };
 
 namespace
@@ -1332,6 +1362,62 @@ static void ConfigLoadOnce(void)
 
     ReadInt("profiler", "summary", &reipan_config.profiler_summary);
     ReadInt("profiler", "fps_only", &reipan_config.profiler_fps_only);
+    ReadInt("overlay", "menu_bar", &reipan_config.overlay_menu_bar);
+
+    ReiPan_ConfigCamera *cam = &reipan_config.camera;
+    ReadInt("over_shoulder_camera", "enabled", &cam->over_shoulder);
+    ReadInt("over_shoulder_camera", "left_shoulder", &cam->side_left);
+    ReadInt("over_shoulder_camera", "collision", &cam->collision);
+    ReadInt("over_shoulder_camera", "auto_follow", &cam->auto_follow);
+    ReadInt("over_shoulder_camera", "invert_y", &cam->invert_y);
+    {
+        /* Before the Scare camera there was only event_cameras: 0 showed the
+         * event's shot, 1 kept this camera (now Guided). */
+        int legacy = -1;
+        ReadInt("over_shoulder_camera", "event_cameras", &legacy);
+        if (legacy == 0)
+        {
+            cam->scare_camera = REIPAN_OTS_SCARE_ORIGINAL;
+        }
+        const char *scare = Lookup("over_shoulder_camera", "scare_camera");
+        if (scare != nullptr && scare[0] != '\0')
+        {
+            if (SDL_strcasecmp(scare, "original") == 0)
+                cam->scare_camera = REIPAN_OTS_SCARE_ORIGINAL;
+            else if (SDL_strcasecmp(scare, "off") == 0)
+                cam->scare_camera = REIPAN_OTS_SCARE_OFF;
+            else
+                cam->scare_camera = REIPAN_OTS_SCARE_GUIDED;
+        }
+    }
+    ReadFloat("over_shoulder_camera", "distance", &cam->distance);
+    ReadFloat("over_shoulder_camera", "height", &cam->height);
+    ReadFloat("over_shoulder_camera", "side", &cam->side);
+    ReadFloat("over_shoulder_camera", "fov", &cam->fov);
+    ReadFloat("over_shoulder_camera", "sensitivity", &cam->sensitivity);
+    ReadFloat("over_shoulder_camera", "smoothing", &cam->smoothing);
+
+    ReiPan_ConfigMouse *mouse = &reipan_config.mouse;
+    ReadInt("mouse", "look", &mouse->look);
+    ReadFloat("mouse", "sensitivity", &mouse->sensitivity);
+    {
+        const char *mode = Lookup("mouse", "camera_button");
+        if (mode != nullptr && mode[0] != '\0')
+        {
+            mouse->camera_toggle = SDL_strcasecmp(mode, "toggle") == 0 ? 1 : 0;
+        }
+        static const char *const kActKeys[REIPAN_MOUSE_ACT_COUNT] = {
+            "raise_camera", "shutter", "lens_shot", "film_previous", "film_next",
+        };
+        for (int i = 0; i < REIPAN_MOUSE_ACT_COUNT; i++)
+        {
+            const int src = ReiPan_GameMouseSourceFromName(Lookup("mouse", kActKeys[i]));
+            if (src >= 0)
+            {
+                mouse->bind[i] = src;
+            }
+        }
+    }
 
     LoadInputBindings();
     ReadTitle(&reipan_config.title, true);
@@ -1356,6 +1442,98 @@ void ReiPan_ConfigLoad(void)
     static const bool once = (ConfigLoadOnce(), true);
     (void)once;
 }
+
+namespace
+{
+
+/* [over_shoulder_camera], with the reasons beside the keys as the rest of the
+ * file has them. */
+std::string BuildCameraSection()
+{
+    const ReiPan_ConfigCamera *c = &reipan_config.camera;
+    char text[2048];
+    std::snprintf(
+        text, sizeof(text),
+        "\n[over_shoulder_camera]\n"
+        "; A modern camera behind and beside the player instead of the\n"
+        ";   game's fixed angles. The right stick turns it, R3 puts it back\n"
+        ";   behind her, and the left stick walks the way it is pushed as\n"
+        ";   seen through it. Event cameras, the viewfinder, ladders and the\n"
+        ";   game's other special shots still play as they were made.\n"
+        ";   0 off, 1 on.\n"
+        "enabled = %d\n"
+        "; 1 over the left shoulder instead of the right.\n"
+        "left_shoulder = %d\n"
+        "; Pull in against the rooms and furniture as they are drawn: over a\n"
+        ";   low table, short of a wall or a closed door. 0 never pulls in.\n"
+        "collision = %d\n"
+        "; Drift back behind her while she walks and the right stick is idle.\n"
+        "auto_follow = %d\n"
+        "; Stick up looks down. On top of the game's own \"Point of view\"\n"
+        ";   option, which this camera follows too.\n"
+        "invert_y = %d\n"
+        "; When the game cuts to an event camera while she can still walk\n"
+        ";   (a ghost appearing, something to look at, the dream's graveyard\n"
+        ";   path): guided keeps this camera and turns it once towards what\n"
+        ";   the event's shot frames; original shows the event's shot; off\n"
+        ";   keeps this camera and looks nowhere. Moments that take control\n"
+        ";   away always play their own shot.\n"
+        "scare_camera = %s\n"
+        "; World units; Rei stands about 27 tall.\n"
+        ";   distance 10..45 behind the shoulder, height 10..32 of the pivot\n"
+        ";   above her feet, side 0..12 off her shoulder.\n"
+        "distance = %.2f\n"
+        "height = %.2f\n"
+        "side = %.2f\n"
+        "; Vertical field of view in degrees, 35..80.\n"
+        "fov = %.1f\n"
+        "; Right-stick speed, 0.25..3.\n"
+        "sensitivity = %.2f\n"
+        "; How far the camera lags her movement, 0 (rigid)..0.8.\n"
+        "smoothing = %.2f\n",
+        c->over_shoulder, c->side_left, c->collision, c->auto_follow,
+        c->invert_y,
+        c->scare_camera == REIPAN_OTS_SCARE_ORIGINAL ? "original"
+            : c->scare_camera == REIPAN_OTS_SCARE_OFF ? "off" : "guided",
+        (double)c->distance, (double)c->height, (double)c->side,
+        (double)c->fov, (double)c->sensitivity, (double)c->smoothing);
+    return text;
+}
+
+/* [mouse]. */
+std::string BuildMouseSection()
+{
+    const ReiPan_ConfigMouse *m = &reipan_config.mouse;
+    char text[2048];
+    std::snprintf(
+        text, sizeof(text),
+        "\n[mouse]\n"
+        "; The mouse in play: it turns the over-the-shoulder camera and aims\n"
+        ";   the Camera Obscura (the pointer is captured while it does, and\n"
+        ";   free in every menu and while the overlay's bar is up; F1 hides\n"
+        ";   it). 0 off, 1 on.\n"
+        "look = %d\n"
+        "; How far it turns, 0.25..4.\n"
+        "sensitivity = %.2f\n"
+        "; hold: the Camera Obscura is up while its button is held.\n"
+        ";   toggle: a click raises it, another lowers it.\n"
+        "camera_button = %s\n"
+        "; What each is on: left, right, middle, x1 (back), x2 (forward),\n"
+        ";   wheel_up, wheel_down or none. The shutter, lens shot and film\n"
+        ";   changes work while the Camera Obscura is up.\n"
+        "raise_camera = %s\n"
+        "shutter = %s\n"
+        "lens_shot = %s\n"
+        "film_previous = %s\n"
+        "film_next = %s\n",
+        m->look, (double)m->sensitivity, m->camera_toggle ? "toggle" : "hold",
+        ReiPan_GameMouseSourceName(m->bind[0]), ReiPan_GameMouseSourceName(m->bind[1]),
+        ReiPan_GameMouseSourceName(m->bind[2]), ReiPan_GameMouseSourceName(m->bind[3]),
+        ReiPan_GameMouseSourceName(m->bind[4]));
+    return text;
+}
+
+} // namespace
 
 int ReiPan_ConfigSave(void)
 {
@@ -1401,9 +1579,15 @@ int ReiPan_ConfigSave(void)
      * section is variable-length text rather than a fixed format string, and
      * regenerating it on the resize pass would be pure waste. */
     const std::string input_section = BuildInputSection();
+    const std::string camera_section = BuildCameraSection() + BuildMouseSection() +
+        "\n[overlay]\n"
+        "; The menu bar F1 shows and hides, as it was left.\n"
+        "menu_bar = " + std::to_string(reipan_config.overlay_menu_bar != 0 ? 1 : 0) +
+        "\n";
     const std::string title_section = TitleText();
 
-    auto format = [r, &input_section, &title_section](char *buf, size_t cap) {
+    auto format = [r, &input_section, &camera_section,
+                   &title_section](char *buf, size_t cap) {
         return SDL_snprintf(
         buf, cap,
         "; ReiPan settings.  Deleting this file restores the defaults.\n"
@@ -1581,6 +1765,7 @@ int ReiPan_ConfigSave(void)
         ";   line and into the picture the game did compose, which is the one\n"
         ";   value here that can spoil the original look.\n"
         "surround_scale = %.3f\n"
+        "%s"
         "\n[profiler]\nsummary = %d\nfps_only = %d\n"
         "\n%s\n%s",
         reipan_config.paths.data_folder,
@@ -1620,6 +1805,7 @@ int ReiPan_ConfigSave(void)
         (double)r->finder_mask_darken,
         (double)r->finder_mask_tint,
         (double)r->finder_mask_scale,
+        camera_section.c_str(),
         reipan_config.profiler_summary,
         reipan_config.profiler_fps_only,
         input_section.c_str(),
@@ -1774,6 +1960,33 @@ void ReiPan_ConfigApply(void)
     ReiPan_RendererSetGrade(r->grade_brightness, r->grade_contrast,
                             r->grade_gamma, r->grade_saturation);
     ReiPan_RendererSetWindowMode(r->window_mode);
+
+    const ReiPan_ConfigCamera  *c = &reipan_config.camera;
+    ReiPan_OverShoulderSettings ots;
+    ots.enabled = c->over_shoulder;
+    ots.side_left = c->side_left;
+    ots.collision = c->collision;
+    ots.auto_follow = c->auto_follow;
+    ots.invert_y = c->invert_y;
+    ots.scare_camera = c->scare_camera;
+    ots.distance = c->distance;
+    ots.height = c->height;
+    ots.side = c->side;
+    ots.fov_deg = c->fov;
+    ots.sensitivity = c->sensitivity;
+    ots.smoothing = c->smoothing;
+    ReiPan_OverShoulderSetSettings(&ots);
+
+    const ReiPan_ConfigMouse *m = &reipan_config.mouse;
+    ReiPan_GameMouseSettings  gm;
+    gm.look = m->look;
+    gm.sensitivity = m->sensitivity;
+    gm.camera_toggle = m->camera_toggle;
+    for (int i = 0; i < REIPAN_MOUSE_ACT_COUNT; i++)
+    {
+        gm.bind[i] = m->bind[i];
+    }
+    ReiPan_GameMouseSetSettings(&gm);
 }
 
 void ReiPan_ConfigCapture(void)
@@ -1808,6 +2021,33 @@ void ReiPan_ConfigCapture(void)
     r->resident_meshes = ReiPan_RendererGetResidentMeshes();
     r->resident_textures = ReiPan_RendererGetResidentTextures();
     r->window_mode = ReiPan_RendererGetWindowMode();
+
+    ReiPan_OverShoulderSettings ots;
+    ReiPan_OverShoulderGetSettings(&ots);
+    ReiPan_ConfigCamera *c = &reipan_config.camera;
+    c->over_shoulder = ots.enabled;
+    c->side_left = ots.side_left;
+    c->collision = ots.collision;
+    c->auto_follow = ots.auto_follow;
+    c->invert_y = ots.invert_y;
+    c->scare_camera = ots.scare_camera;
+    c->distance = ots.distance;
+    c->height = ots.height;
+    c->side = ots.side;
+    c->fov = ots.fov_deg;
+    c->sensitivity = ots.sensitivity;
+    c->smoothing = ots.smoothing;
+
+    ReiPan_GameMouseSettings gm;
+    ReiPan_GameMouseGetSettings(&gm);
+    ReiPan_ConfigMouse *m = &reipan_config.mouse;
+    m->look = gm.look;
+    m->sensitivity = gm.sensitivity;
+    m->camera_toggle = gm.camera_toggle;
+    for (int i = 0; i < REIPAN_MOUSE_ACT_COUNT; i++)
+    {
+        m->bind[i] = gm.bind[i];
+    }
 
     /* The windowed size, which the renderer latches while the window is not
      * fullscreen.  Reading the live window instead would store the desktop

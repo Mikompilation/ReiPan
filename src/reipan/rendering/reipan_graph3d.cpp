@@ -26,6 +26,7 @@
 #include "reipan/gs/reipan_gs.h"
 #include "reipan/gs/reipan_gs_c.h"
 #include "reipan/reipan_profiler.h"
+#include "reipan/gameplay/reipan_ots_geometry.h"
 #include "reipan/rendering/reipan_renderer.h"
 
 #include <algorithm>
@@ -376,9 +377,11 @@ public:
     MeshStreamScope(const sceGsTex0 *tex0, int max_vertices,
                     const float *local_world,
                     const ReiPanLightState *fragment_lights = nullptr,
-                    const void *texture = nullptr)
-        : token_(ReiPan_RendererBeginMeshStream(
-              tex0, max_vertices, local_world, fragment_lights, texture))
+                    const void *texture = nullptr,
+                    const void *source = nullptr)
+        : token_((ReiPan_RendererSetNextMeshStreamSource(source),
+                  ReiPan_RendererBeginMeshStream(
+                      tex0, max_vertices, local_world, fragment_lights, texture)))
     {
     }
 
@@ -589,7 +592,8 @@ void DrawIndexedFallback(const sceGsTex0 *tex0,
                          const std::vector<unsigned int> &indices,
                          const float *local_world,
                          const ReiPanLightState *fragment_lights,
-                         const void *texture = nullptr)
+                         const void *texture = nullptr,
+                         const void *source = nullptr)
 {
     const size_t vertex_count = positions.size() / 3;
     if (positions.size() != vertex_count * 3 ||
@@ -612,7 +616,7 @@ void DrawIndexedFallback(const sceGsTex0 *tex0,
     }
 
     MeshStreamScope stream(tex0, (int)indices.size(), local_world,
-                           fragment_lights, texture);
+                           fragment_lights, texture, source);
     if (!stream)
     {
         return;
@@ -3058,7 +3062,7 @@ void ReiPan_Graph3dDrawPresetMesh(SGDFILEHEADER *owner,
     DrawIndexedFallback(tex0, positions, normals, uv, rgba, indices,
                         local_world,
                         fragment_lighting ? &fragment_lights : nullptr,
-                        bound_texture);
+                        bound_texture, mesh);
 }
 
 void DrawRuntimeMesh(SGDFILEHEADER *owner,
@@ -3155,7 +3159,7 @@ void DrawRuntimeMesh(SGDFILEHEADER *owner,
          * fallbacks pay the old per-vertex CPU cost. */
         build_cpu_colors();
         MeshStreamScope stream(tex0, stream_capacity, local_world,
-                               fragment_lights_p, bound_texture);
+                               fragment_lights_p, bound_texture, mesh);
         if (!stream)
         {
             return;
@@ -3197,6 +3201,9 @@ std::vector<float> s_cachedPostVUVNNormals;
  */
 void ReiPan_Graph3dInvalidateSkinCache(SGDFILEHEADER *owner)
 {
+    /* The camera collision's copy of this model's triangles, likewise. */
+    ReiPan_OtsGeomForgetOwner(owner);
+
     s_cachedPostVUVNSource = nullptr;
     s_cachedPostVUVNPositions.clear();
     s_cachedPostVUVNNormals.clear();
@@ -3392,6 +3399,53 @@ void ReiPan_Graph3dEndTim2Upload(void)
 void ReiPan_Graph3dNotifyTex0Rebase(void *source)
 {
     RetireTim2Source(source);
+}
+
+void ReiPan_Graph3dOtsRecordPresetMesh(SGDFILEHEADER *owner,
+                                       SGDPROCUNITHEADER *vuvn,
+                                       SGDPROCUNITHEADER *mesh,
+                                       const float *local_world)
+{
+    if (!ReiPan_OtsGeomCollecting() || owner == nullptr || vuvn == nullptr ||
+        mesh == nullptr || local_world == nullptr)
+    {
+        return;
+    }
+
+    if (!ReiPan_OtsGeomHasMesh(mesh, owner))
+    {
+        const int mesh_type = mesh->VUMeshDesc.ucMeshType;
+        const int num_mesh = mesh->VUMeshDesc.ucNumMesh;
+        if ((mesh_type != iMT_0 && mesh_type != iMT_2 && mesh_type != iMT_2F) ||
+            num_mesh <= 0 || num_mesh > 256)
+        {
+            return;
+        }
+
+        /* Its own scratch: this runs just before ReiPan_Graph3dDrawPresetMesh
+         * decodes into s_mesh_decode_scratch, and once per mesh, not per
+         * frame. */
+        static std::vector<float>        positions;
+        static std::vector<float>        normals;
+        static std::vector<float>        uv;
+        static std::vector<unsigned int> indices;
+        int                              vertex_count = 0;
+
+        if (!BuildPresetStaticGeometry(vuvn, mesh, mesh_type, num_mesh,
+                                       positions, normals, uv, indices,
+                                       &vertex_count))
+        {
+            /* Remember it as empty so it is not decoded again every frame. */
+            ReiPan_OtsGeomAddMesh(mesh, owner, positions.data(), 0,
+                                  indices.data(), 0);
+            return;
+        }
+        ReiPan_OtsGeomAddMesh(mesh, owner, positions.data(), vertex_count,
+                              indices.data(), (int)indices.size());
+    }
+
+    ReiPan_OtsGeomRecordDraw(mesh, owner,
+                             reinterpret_cast<const float (*)[4]>(local_world));
 }
 
 void ReiPan_Graph3dNoteTextureUpload(const void *tri2_head)
