@@ -53,6 +53,8 @@
 #include "system/pad/pad_ctrl.h"        // CheckPadNowPlaySe, CheckPadTrgPlaySe, pad_key
 #include "ingame/story_menu.h"  // IsLockTblOn
 #include "ingame/ingame_effect.h"     // IgEffectPlyrPutSet / IgEffectPlyrPutDelete (the player map-put)
+#include "reipan/gameplay/reipan_over_shoulder.h"   // PC: the over-the-shoulder camera
+#include "reipan/io/reipan_game_mouse.h"   // PC: the mouse aims the Camera Obscura
 
 // ──────────────────────────────────────────────────────────────────────
 // Callees in runs whose file is not settled yet (unassigned@ in tus.json).
@@ -1520,6 +1522,8 @@ void PlyrMoveDirCtrl(void)
     float         rot[3];
     sceVu0FVECTOR cam_rot;
     float         d, t, a, b, c;
+    float         ots_yaw = 0.0f;   // PC
+    int           ots;              // PC
 
     rot[0] = 0.0f;
     rot[1] = 0.0f;
@@ -1543,9 +1547,21 @@ void PlyrMoveDirCtrl(void)
         ang = PlyrGetStickAngle();
     PlyrMoveSpeedCtrl(ang);
 
+    // PC: under the over-the-shoulder camera the stick is relative to its
+    // heading, not to the line from the camera to the player (which the
+    // shoulder offset skews), and it never cuts, so no cut hold applies.
+    ots = 0;
+    if (ang == 10.0f)
+        (void)ReiPan_OverShoulderMoveYaw(0.0f, 0, &ots_yaw);
+
     if (ang != 10.0f)
     {
         GetTrgtRot(gra3dGetCamera()->matCoord[3], ingame_wrk.plyr_wrk->pos, cam_rot, 2);
+        if (ReiPan_OverShoulderMoveYaw(cam_rot[1], 1, &ots_yaw))
+        {
+            cam_rot[1] = ots_yaw;
+            ots = 1;
+        }
         rot[0] = ang + cam_rot[1];
         plyr->cam_dir = cam_rot[1];
         RotLimitChk(&rot[0]);
@@ -1566,6 +1582,8 @@ void PlyrMoveDirCtrl(void)
             return;
         }
 
+        if (ots && (ingame_wrk.plyr_wrk->flags2 & 0x80000) != 0)
+            PlyrMapCamChgClear();       // PC: no cut to hold the facing across
         if ((ingame_wrk.plyr_wrk->flags2 & 0x80000) == 0)
         {
             ingame_wrk.plyr_wrk->rot_target[1] = rot[0];
@@ -1689,6 +1707,8 @@ void PlyrFinderMoveCtrl(void)
     plyr->_20c = t;
 
     GetStickRaw(5, &x, &y);
+    float mouse_yaw = 0.0f;             // PC: the mouse's aim this frame
+    float mouse_pitch = 0.0f;
 
     // FF3 compares in double: fabs((double)fx) against 50.0
     fx   = (float)x - 128.0f;
@@ -1702,6 +1722,19 @@ void PlyrFinderMoveCtrl(void)
     if ((ingame_wrk.plyr_wrk->flags & PLYR_FLG_8000000) != 0)
         turn *= 0.600000024f;
     turn *= GetFrameTimeScale();
+
+    // PC: the mouse aims too, inside the same limits as the stick (the hold
+    // below, the pitch range further down).
+    ReiPan_GameMouseRequestLook();
+    ReiPan_GameMouseLook(&mouse_yaw, &mouse_pitch);
+    if ((ingame_wrk.plyr_wrk->flags & PLYR_FLG_8000000) != 0)
+    {
+        mouse_yaw *= 0.600000024f;
+        mouse_pitch *= 0.600000024f;
+    }
+    if (GetOptionWrk()->now.b09 == 1)
+        mouse_pitch = -mouse_pitch;     // "Point of view: Reverse"
+    turn += mouse_yaw;
     if (ingame_wrk.plyr_wrk->status == 4)
     {
         d = (ingame_wrk.plyr_wrk->rot[1] + turn) - ingame_wrk.plyr_wrk->hold_yaw;
@@ -1731,6 +1764,7 @@ void PlyrFinderMoveCtrl(void)
     if ((ingame_wrk.plyr_wrk->flags & PLYR_FLG_8000000) != 0)
         pitch *= 0.600000024f;
     pitch *= GetFrameTimeScale();
+    pitch += mouse_pitch;               // PC
 
     limit = 1;
     up    = 0.0f;

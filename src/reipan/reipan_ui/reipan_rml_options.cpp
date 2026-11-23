@@ -5,6 +5,8 @@
 #include "../io/reipan_input.h"
 #include "../reipan_config.h"
 #include "../rendering/reipan_renderer.h"
+#include "../gameplay/reipan_over_shoulder.h"
+#include "../io/reipan_game_mouse.h"
 
 #include "outgame/option.h"             // GetOptionWrk, OptionInit, OptionApplySound
 
@@ -787,6 +789,22 @@ Page GraphicsPage()
     return page;
 }
 
+/* The mouse in play (io/reipan_game_mouse.h); the overlay's settle-and-save
+ * writes reipan.ini. */
+ReiPan_GameMouseSettings MouseSettings()
+{
+    ReiPan_GameMouseSettings s;
+    ReiPan_GameMouseGetSettings(&s);
+    return s;
+}
+
+void EditMouse(const std::function<void(ReiPan_GameMouseSettings &)> &edit)
+{
+    ReiPan_GameMouseSettings s = MouseSettings();
+    edit(s);
+    ReiPan_GameMouseSetSettings(&s);
+}
+
 /* The game's Game Play and Controller screens (phases 22 and 23), and the
  * port's bindings. */
 Page ControlsPage()
@@ -812,14 +830,49 @@ Page ControlsPage()
         {"Normal", "Reverse"}, [] { return GameOptions().b09 != 0 ? 1 : 0; },
         [](int value) { GameOptions().b09 = (u_char)value; }));
     rows.push_back(Choice(
-        "Analog stick", Fixed("Which stick walks and which aims the Camera Obscura."),
-        {"Left walks, right aims", "Right walks, left aims"},
+        "Analog stick",
+        Fixed("With the Camera Obscura raised: which stick aims it and which "
+              "walks. Without it, the left stick always walks."),
+        {"Left aims, right walks", "Right aims, left walks"},
         [] { return GameOptions().b13 != 0 ? 1 : 0; },
         [](int value) { GameOptions().b13 = (u_char)value; }));
     rows.push_back(Choice(
         "Button layout", ButtonLayoutHelp, {"Type A", "Type B", "Type C"},
         [] { return std::clamp((int)GameOptions().pad_cfg, 0, 2); },
         [](int value) { GameOptions().pad_cfg = (signed char)value; }));
+
+    rows.push_back(Heading("Mouse"));
+    rows.push_back(Toggle(
+        "Mouse look",
+        Fixed("The mouse turns the over-the-shoulder camera and aims the "
+              "Camera Obscura. The pointer is captured while it does and free "
+              "in every menu, and while the overlay's bar is up: F1 hides it."),
+        [] { return MouseSettings().look != 0; },
+        [](bool on) {
+            EditMouse([on](ReiPan_GameMouseSettings &s) { s.look = on ? 1 : 0; });
+        }));
+    rows.push_back(When(
+        Slider("Mouse sensitivity", Fixed("How far the mouse turns."), 0.25f,
+               4.0f, 0.05f, [] { return MouseSettings().sensitivity; },
+               [](float value) {
+                   EditMouse([value](ReiPan_GameMouseSettings &s) {
+                       s.sensitivity = value;
+                   });
+               },
+               Format("%.2fx")),
+        [] { return MouseSettings().look != 0; }));
+    rows.push_back(Choice(
+        "Camera Obscura button",
+        Fixed("The mouse button that raises the Camera Obscura (right, unless "
+              "the overlay's Settings > Controls > Mouse moves it): held to "
+              "keep it up, or clicked once to raise it and again to lower it."),
+        {"Hold", "Toggle"},
+        [] { return MouseSettings().camera_toggle != 0 ? 1 : 0; },
+        [](int value) {
+            EditMouse([value](ReiPan_GameMouseSettings &s) {
+                s.camera_toggle = value != 0 ? 1 : 0;
+            });
+        }));
 
     rows.push_back(Heading("Bindings"));
     Row reset = When(
@@ -836,6 +889,147 @@ Page ControlsPage()
                }),
         [] { return ReiPan_InputBindingsAreDefault() == 0; });
     rows.push_back(std::move(reset));
+    return page;
+}
+
+/* The over-the-shoulder camera (gameplay/reipan_over_shoulder.h).  Each row
+ * reads and writes the camera's own settings; the overlay's settle-and-save
+ * notices the change and writes reipan.ini. */
+ReiPan_OverShoulderSettings CameraSettings()
+{
+    ReiPan_OverShoulderSettings s;
+    ReiPan_OverShoulderGetSettings(&s);
+    return s;
+}
+
+void EditCamera(const std::function<void(ReiPan_OverShoulderSettings &)> &edit)
+{
+    ReiPan_OverShoulderSettings s = CameraSettings();
+    edit(s);
+    ReiPan_OverShoulderSetSettings(&s);
+}
+
+bool CameraOn()
+{
+    return CameraSettings().enabled != 0;
+}
+
+Row CameraSlider(const char *label, const char *help, float min, float max,
+                 float step, float ReiPan_OverShoulderSettings::*field,
+                 const char *format)
+{
+    return When(Slider(label, Fixed(help), min, max, step,
+                       [field] { return CameraSettings().*field; },
+                       [field](float value) {
+                           EditCamera([&](ReiPan_OverShoulderSettings &s) {
+                               s.*field = value;
+                           });
+                       },
+                       Format(format)),
+                CameraOn);
+}
+
+Row CameraToggle(const char *label, const char *help,
+                 int ReiPan_OverShoulderSettings::*field, const char *off,
+                 const char *on)
+{
+    return When(Toggle(label, Fixed(help),
+                       [field] { return CameraSettings().*field != 0; },
+                       [field](bool value) {
+                           EditCamera([&](ReiPan_OverShoulderSettings &s) {
+                               s.*field = value ? 1 : 0;
+                           });
+                       },
+                       off, on),
+                CameraOn);
+}
+
+Page CameraPage()
+{
+    Page page{"camera", "Camera", {}};
+    std::vector<Row> &rows = page.rows;
+
+    rows.push_back(Choice(
+        "Camera view",
+        Fixed("Fixed: the game's own camera angles. Over the shoulder: a "
+              "camera behind and beside her that the right stick turns and R3 "
+              "puts back behind her; the left stick walks the way it is "
+              "pushed, as the camera sees it. Events, the Camera Obscura and "
+              "ladders keep their own cameras."),
+        {"Fixed", "Over the shoulder"},
+        [] { return CameraOn() ? 1 : 0; },
+        [](int value) {
+            EditCamera([value](ReiPan_OverShoulderSettings &s) {
+                s.enabled = value != 0 ? 1 : 0;
+            });
+        }));
+    rows.push_back(CameraToggle(
+        "Shoulder", "Which shoulder the camera looks over.",
+        &ReiPan_OverShoulderSettings::side_left, "Right", "Left"));
+    rows.push_back(CameraToggle(
+        "Collision",
+        "Pull in against the rooms and furniture as they are drawn: over a "
+        "low table, short of a wall or a closed door.",
+        &ReiPan_OverShoulderSettings::collision, "Off", "On"));
+    rows.push_back(When(
+        Choice("Scare camera",
+               Fixed("When the game cuts to an event camera while you can "
+                     "still walk -- a ghost appearing, something to look at, "
+                     "the dream's graveyard path. Guided: stay over the "
+                     "shoulder and turn once towards what the shot frames; "
+                     "the right stick or mouse takes over at once. Original: "
+                     "the game's own shot. Off: stay over the shoulder. "
+                     "Moments that take control away always play their own "
+                     "shot."),
+               {"Guided", "Original", "Off"},
+               [] { return CameraSettings().scare_camera; },
+               [](int value) {
+                   EditCamera([value](ReiPan_OverShoulderSettings &s) {
+                       s.scare_camera = value;
+                   });
+               }),
+        CameraOn));
+    rows.push_back(CameraToggle(
+        "Follow behind",
+        "Drift back behind her while she walks and the right stick is idle.",
+        &ReiPan_OverShoulderSettings::auto_follow, "Off", "On"));
+    rows.push_back(CameraToggle(
+        "Vertical look",
+        "Which way up and down turn the camera, on top of the Controls page's "
+        "Point of view.",
+        &ReiPan_OverShoulderSettings::invert_y, "Normal", "Reverse"));
+
+    rows.push_back(Heading("Framing"));
+    rows.push_back(CameraSlider("Distance", "How far behind her the camera hangs.",
+                                10.0f, 45.0f, 0.5f,
+                                &ReiPan_OverShoulderSettings::distance, "%.1f"));
+    rows.push_back(CameraSlider("Height", "How high above her feet it looks from.",
+                                10.0f, 32.0f, 0.5f,
+                                &ReiPan_OverShoulderSettings::height, "%.1f"));
+    rows.push_back(CameraSlider("Shoulder offset", "How far to the side of her it sits.",
+                                0.0f, 12.0f, 0.25f,
+                                &ReiPan_OverShoulderSettings::side, "%.2f"));
+    rows.push_back(CameraSlider("Field of view", "Vertical, in degrees.",
+                                35.0f, 80.0f, 1.0f,
+                                &ReiPan_OverShoulderSettings::fov_deg, "%.0f"));
+    rows.push_back(CameraSlider("Look speed", "How fast the right stick turns it.",
+                                0.25f, 3.0f, 0.05f,
+                                &ReiPan_OverShoulderSettings::sensitivity, "%.2fx"));
+    rows.push_back(CameraSlider("Smoothing", "How far the camera lags her movement.",
+                                0.0f, 0.8f, 0.05f,
+                                &ReiPan_OverShoulderSettings::smoothing, "%.2f"));
+
+    rows.push_back(Heading(""));
+    rows.push_back(When(
+        Action("Reset camera", Fixed("The framing and options above back to "
+                                     "their defaults; the camera stays on."),
+               "Reset", [] {
+                   ReiPan_OverShoulderSettings d;
+                   ReiPan_OverShoulderDefaults(&d);
+                   d.enabled = 1;
+                   ReiPan_OverShoulderSetSettings(&d);
+               }),
+        CameraOn));
     return page;
 }
 
@@ -893,6 +1087,7 @@ void BuildPages()
     g_opt.pages.push_back(GraphicsPage());
     g_opt.pages.push_back(AudioPage());
     g_opt.pages.push_back(ControlsPage());
+    g_opt.pages.push_back(CameraPage());
 
     using ReiPanRmlCommon::Escape;
     std::string tabs;
