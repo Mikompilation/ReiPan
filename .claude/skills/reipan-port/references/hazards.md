@@ -1021,6 +1021,18 @@ Add an entry whenever something burns time and could again. Keep each one: sympt
   `python gdbrun.py` (play with host input), then `gdbrun.py --cmd "frame N" "p *ene->cmn"` on the held
   game; grep lib/unassigned_stubs.c for zero tables the faulting code reads.
 
+### A saved host pointer works until the next build or reboot (2026-11-24)
+- Symptom: loading a card save crashes in `EffectRelease <- EffKind1ECut <- PhotoObjSlotCut <-
+  PhotoObjAreaOn <- MapLoadSetNowRoom`, on a pointer outside the module. The same save loads fine in the
+  build that wrote it.
+- Cause: save blocks are raw host memory. Block 30 (PHOTO_OBJ_SLOT) holds a pointer into the effect
+  banks; a rebuild or Windows' per-boot ASLR base moves them. The EE's banks never move.
+- Fix: a block with a pointer needs it dropped or rebuilt after the load, before its first reader
+  (PhotoObjLoadRestore in IngameLoadRestore). The blocks with host pointers are the ones
+  reipan_save_codec.cpp's Size() lists: 7 / 8 (offsets, EventAfterLoad), 27 / 28 (PlyrLoadRestore), 30,
+  51 (MapPlayStartReset's MapDoorVecInit), 54, 55 (their LoadRestore). To check a save file: search it
+  for 8-byte values 0x7ff6........ .
+
 ### A caller's buffer sized from what it copies, not what the callee writes (2026-10-20)
 - Symptom: none while the callee is a stub; host stack corruption once it is written.
 - Cause: AlbumCurInfoStamp passed int date[3] to CdClockReadInt 0x25ccd0, which writes six ints; the
