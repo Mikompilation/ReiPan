@@ -13,7 +13,8 @@
  * ======================================================================== */
 #include "graphics/mmanage.h"
 
-#include <math.h>                       // sqrtf
+#include <float.h>                      // FLT_MAX
+#include <math.h>                       // sqrtf, isfinite
 #include <string.h>                     // memcpy, strcmp
 
 #include "common/heapctrl.h"            // heapCtrlMalloc / heapCtrlFree
@@ -60,6 +61,17 @@ alignas(16) sceVu0FMATRIX mdl_flip_yz = {
 static inline float CcsLength(const float *v)
 {
     return sqrtf((v[0] * v[0] + v[1] * v[1]) + v[2] * v[2]);
+}
+
+// PC: 1 / x as the PS2 does it.  Its FPU and VU have no infinity or NaN: a
+// division by zero gives the largest float, which times the zero vector that
+// had the zero length gives zero again.  IEEE gives infinity, and infinity
+// times zero is NaN -- a NaN that then never leaves the chain, so a hair point
+// that once lands exactly on another (or on a collision capsule's axis) took
+// that piece of Rei's hair off for good.
+static inline float CcsRecip(float x)
+{
+    return x > 0.0f ? 1.0f / x : FLT_MAX;
 }
 
 // vopmula.xyz / vopmsub.xyz: out.xyz = a x b, out.w = a.w.
@@ -286,7 +298,7 @@ void ModelCcs::Update()
         d[1] = a->pos[1] - b->pos[1];
         d[2] = a->pos[2] - b->pos[2];
         len = CcsLength(d);
-        k = ((link[i].len - len) * CCS_LINK_STIFF) / len;
+        k = ((link[i].len - len) * CCS_LINK_STIFF) * CcsRecip(len);    // PC: PS2 division
         d[0] *= k;
         d[1] *= k;
         d[2] *= k;
@@ -344,6 +356,19 @@ void ModelCcs::Update()
     for (i = 0; i < point_num; i++)
         memcpy(point[i].prev, point[i].pos, sizeof(point[i].prev));
 
+    // PC: a chain that still went non-finite (through a coordinate or a
+    // collision shape rather than its own divisions) starts over at rest
+    // rather than staying broken; the PS2 cannot get here.
+    for (i = 0; i < point_num; i++)
+    {
+        if (!isfinite(point[i].pos[0]) || !isfinite(point[i].pos[1]) ||
+            !isfinite(point[i].pos[2]))
+        {
+            Reset();
+            break;
+        }
+    }
+
     SetCoordinate();
 }
 
@@ -352,7 +377,7 @@ void ModelCcs::Update()
 // rows 1 / 2 from cross products with an up vector ((1, 0, 0) unless the
 // link points that way), row 3 coordinate 0's translation plus point i.
 // FF3 leaves w = 1 in rows 0 and 2 (it normalizes the point difference with
-// w = 1 and crosses from row 0); kept. Then every coordinate is marked for
+// w = 1 and crosses from row 0); the PC clears it (see below). Then every coordinate is marked for
 // recalculation.
 // FF3 0x0020fd08
 
@@ -375,7 +400,7 @@ void ModelCcs::SetCoordinate()
         m[0][0] = point[i + 1].pos[0] - point[i].pos[0];
         m[0][1] = point[i + 1].pos[1] - point[i].pos[1];
         m[0][2] = point[i + 1].pos[2] - point[i].pos[2];
-        s = 1.0f / CcsLength(m[0]);
+        s = CcsRecip(CcsLength(m[0]));                    // PC: PS2 division
         m[0][0] *= s;
         m[0][1] *= s;
         m[0][2] *= s;
@@ -395,6 +420,18 @@ void ModelCcs::SetCoordinate()
         up[3] = 0.0f;
         CcsCross(m[1], up, m[0]);
         CcsCross(m[2], m[0], m[1]);
+
+        // PC: the ROM leaves w = 1 in rows 0 and 2 (the normalised point
+        // difference's w, carried into row 2 by the cross product).  The
+        // VU1 never reads that column, but the host's renderer takes
+        // matLocalWorld as a full 4x4 into the model-view-projection, where
+        // those 1s land in the clip w: the chain's meshes -- the paper
+        // streamers (shide) on the rope in the Stained Corridor -- exploded
+        // into spikes across the screen.  An affine matrix's w column is
+        // (0, 0, 0, 1).
+        m[0][3] = 0.0f;
+        m[1][3] = 0.0f;
+        m[2][3] = 0.0f;
 
         m[3][0] = (0.0f + c[0].matLocalWorld[3][0]) + point[i].pos[0];
         m[3][1] = (0.0f + c[0].matLocalWorld[3][1]) + point[i].pos[1];
@@ -524,7 +561,7 @@ void ModelCcs::SetWindDir()
     wind_dir[2] = r + r + -1.0f;
 
     // vrsqrt / vmul.w / vmulq.xyz: w = 0 * 1
-    s = 1.0f / CcsLength(wind_dir);
+    s = CcsRecip(CcsLength(wind_dir));                // PC: PS2 division
     wind_dir[0] *= s;
     wind_dir[1] *= s;
     wind_dir[2] *= s;
