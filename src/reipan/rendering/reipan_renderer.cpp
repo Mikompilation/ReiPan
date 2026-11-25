@@ -12269,19 +12269,25 @@ void RecordFramePasses(SDL_GPUCommandBuffer *cmd,
      * Resolve the internal render resolution and pick what the frame is
      * rasterised into.
      *
-     * When it comes out equal to the output -- MATCH_WINDOW, or a scale that
-     * happens to land on it -- the scene target is skipped and drawing goes
-     * straight into the swapchain, so the default path costs nothing and
-     * behaves exactly as it did before the split.  A target that will not
-     * allocate falls back to the same direct path rather than dropping the
-     * frame.
+     * When it comes out equal to the output target -- MATCH_WINDOW, or a scale
+     * that happens to land on it -- the scene target is skipped and drawing
+     * goes straight into that target.
+     *
+     * Never into the swapchain itself, whatever the sizes: a frame reads itself
+     * back (the GS captures, the room glow, the pause still, the screen mirror
+     * every frame) and SDL_GPU's swapchain texture is write-only.  D3D12 happens
+     * to give it an SRV; the Vulkan backend leaves its sampled view
+     * uninitialised, so the room glow's first bind crashed inside the driver on
+     * every SDR Vulkan session.
      *
      * The format test is the other half of "equal to the output": every mesh
      * pipeline was built against g_scene_format, so drawing straight into the
      * composite is only legal when the composite has that format.  It always
-     * does when the composite is the output target; it does not when the
-     * composite is an HDR swapchain, which is what forces the scene target on
-     * a session that turned HDR on after startup.
+     * does when the composite is the output target.
+     *
+     * A scene target that will not allocate still falls back to the direct path
+     * rather than dropping the frame, swapchain included; `scene_source` below
+     * is what keeps that frame from being read.
      */
     Uint32 render_width = 0;
     Uint32 render_height = 0;
@@ -12289,7 +12295,8 @@ void RecordFramePasses(SDL_GPUCommandBuffer *cmd,
                       &render_height);
 
     SDL_GPUTexture *scene_texture = output_texture;
-    bool render_direct = render_width == swapchain_width &&
+    bool render_direct = output_texture != swapchain_texture &&
+                         render_width == swapchain_width &&
                          render_height == swapchain_height &&
                          output_texture_format == g_scene_format;
     if (!render_direct)
@@ -12329,6 +12336,13 @@ void RecordFramePasses(SDL_GPUCommandBuffer *cmd,
     }
     g_render_width = render_width;
     g_render_height = render_height;
+
+    /* What the frame's read-backs sample.  Null when the fallback above put the
+     * frame in the swapchain: each of them drops out on a null source, so that
+     * frame loses its captures and glow instead of sampling an image with no
+     * view to sample through. */
+    SDL_GPUTexture *scene_source =
+        scene_texture != swapchain_texture ? scene_texture : nullptr;
 
     /* The one number in the startup banner that is not known until a frame has
      * been recorded, so it is reported here -- once, and again after a resize
@@ -12618,12 +12632,12 @@ void RecordFramePasses(SDL_GPUCommandBuffer *cmd,
                 }
                 else if (point.room_glow < 0)
                 {
-                    RecordGsCapture(cmd, scene_texture, render_width,
+                    RecordGsCapture(cmd, scene_source, render_width,
                                     render_height, point);
                 }
                 else if ((size_t)point.room_glow < g_room_glow_requests.size())
                 {
-                    RecordRoomGlow(cmd, scene_texture, render_width,
+                    RecordRoomGlow(cmd, scene_source, render_width,
                                    render_height,
                                    g_room_glow_requests[(size_t)point.room_glow]);
                 }
@@ -12669,10 +12683,10 @@ void RecordFramePasses(SDL_GPUCommandBuffer *cmd,
      * them, which is why they already sat in front of the UI pass. */
     if (!repeat)
     {
-        *capture_recorded = RecordPauseScreenCapture(cmd, scene_texture,
+        *capture_recorded = RecordPauseScreenCapture(cmd, scene_source,
                                                      render_width,
                                                      render_height);
-        *mirror_recorded = RecordScreenMirror(cmd, scene_texture, render_width,
+        *mirror_recorded = RecordScreenMirror(cmd, scene_source, render_width,
                                               render_height);
     }
 
