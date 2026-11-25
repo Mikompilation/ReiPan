@@ -29,6 +29,7 @@ typedef struct ReiPan_ConfigRenderer
     int   window_mode;       /* REIPAN_WINDOW_MODE_*   */
     int   window_width;      /* windowed size only; fullscreen is never stored */
     int   window_height;
+    int   backend;           /* REIPAN_BACKEND_*; read once, at startup */
     int   render_mode;       /* REIPAN_RENDER_RES_*    */
     float render_scale;
     int   upscale_filter;    /* REIPAN_RENDER_FILTER_* */

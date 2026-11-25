@@ -606,11 +606,74 @@ bool FinderOn()
     return enable != 0;
 }
 
+/* AUTO and the backends this platform has, in the order the row steps through
+ * them. */
+std::vector<int> Backends()
+{
+    std::vector<int> backends;
+    for (int i = 0; i < REIPAN_BACKEND_COUNT; i++)
+    {
+        if (ReiPan_RendererBackendIsAvailable(i) != 0)
+        {
+            backends.push_back(i);
+        }
+    }
+    return backends;
+}
+
+std::string BackendHelp()
+{
+    const std::string asked =
+        ReiPan_RendererGetBackendLabel(ReiPan_RendererGetBackend());
+    std::string text = "Which graphics API draws the game. Auto suits most "
+                       "systems. Drawing with ";
+    text += ReiPan_RendererGetBackendLabel(ReiPan_RendererGetBackendActive());
+    text += " now.";
+    switch (ReiPan_RendererGetBackendStatus())
+    {
+    case REIPAN_BACKEND_STATUS_RESTART:
+        text += " Restart ReiPan to switch to " + asked + ".";
+        break;
+    case REIPAN_BACKEND_STATUS_FALLBACK:
+        text += " " + asked + " could not be started.";
+        break;
+    case REIPAN_BACKEND_STATUS_OVERRIDDEN:
+        text += " SDL_GPU_DRIVER is set and overrides this setting.";
+        break;
+    default:
+        break;
+    }
+    return text;
+}
+
 Page GraphicsPage()
 {
     Page page{"graphics", "Graphics", {}};
     std::vector<Row> &rows = page.rows;
 
+    {
+        const std::vector<int> backends = Backends();
+        std::vector<std::string> names;
+        for (int backend : backends)
+        {
+            names.push_back(ReiPan_RendererGetBackendLabel(backend));
+        }
+        rows.push_back(Choice(
+            "Graphics API", BackendHelp, std::move(names),
+            [backends] {
+                /* Not in the list: a settings file from another system.  It
+                 * runs as Auto here, so that is what the row says. */
+                const auto at = std::find(backends.begin(), backends.end(),
+                                          ReiPan_RendererGetBackend());
+                return at != backends.end() ? (int)(at - backends.begin()) : 0;
+            },
+            [backends](int index) {
+                if (index >= 0 && index < (int)backends.size())
+                {
+                    ReiPan_RendererSetBackend(backends[index]);
+                }
+            }));
+    }
     rows.push_back(Choice(
         "Render resolution",
         Fixed("Match the window, the PS2's own 640x448 times a scale, or the "

@@ -30,6 +30,15 @@ Your choice is checked, then saved as `data_folder` under `[paths]` in
 `reipan.ini`. Change it later in **Settings → Game data folder…**. A folder holding those
 files beside the executable or above it is found without asking.
 
+## Graphics API
+
+ReiPan picks a graphics API by itself: Direct3D 12 on Windows, Vulkan on Linux,
+Metal on macOS. Choose another in **Options → Graphics → Graphics API** or
+**Settings → Graphics**, then restart. One that cannot be started falls back to
+the automatic choice. If one starts but misbehaves, set `backend = auto` under
+`[render]` in `reipan.ini`, or start ReiPan once with `SDL_GPU_DRIVER` set to
+`direct3d12`, `vulkan` or `metal`.
+
 ## PS2 save transfer
 
 Open **Settings → PS2 save transfer…** to transfer European, US or Japanese

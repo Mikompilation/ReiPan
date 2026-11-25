@@ -1131,7 +1131,7 @@ void PersistSettingsIfChanged()
     /* Every field is 4 bytes, so the struct has no padding and memcmp is a
      * valid comparison.  The assert is here to fail loudly if a future field
      * breaks that rather than letting the compare read indeterminate bytes. */
-    static_assert(sizeof(ReiPan_ConfigRenderer) == 36 * sizeof(int),
+    static_assert(sizeof(ReiPan_ConfigRenderer) == 37 * sizeof(int),
                   "ReiPan_ConfigRenderer gained padding; compare by field");
     static_assert(sizeof(ReiPan_ConfigTitleScene) ==
                       REIPAN_TITLE_NAME_MAX + 22 * sizeof(int),
@@ -2004,6 +2004,41 @@ void DrawGraphicsSettingsMenu()
     {
         return;
     }
+
+    ImGui::TextDisabled("Graphics API");
+    {
+        const int backend = ReiPan_RendererGetBackend();
+        for (int i = 0; i < REIPAN_BACKEND_COUNT; i++)
+        {
+            if (ReiPan_RendererBackendIsAvailable(i) != 0 &&
+                ImGui::MenuItem(ReiPan_RendererGetBackendLabel(i), nullptr,
+                                backend == i))
+            {
+                ReiPan_RendererSetBackend(i);
+            }
+        }
+
+        const char *asked =
+            ReiPan_RendererGetBackendLabel(ReiPan_RendererGetBackend());
+        ImGui::TextDisabled(
+            "  drawing with %s",
+            ReiPan_RendererGetBackendLabel(ReiPan_RendererGetBackendActive()));
+        switch (ReiPan_RendererGetBackendStatus())
+        {
+        case REIPAN_BACKEND_STATUS_RESTART:
+            ImGui::TextDisabled("  restart ReiPan to switch to %s", asked);
+            break;
+        case REIPAN_BACKEND_STATUS_FALLBACK:
+            ImGui::TextDisabled("  %s could not be started", asked);
+            break;
+        case REIPAN_BACKEND_STATUS_OVERRIDDEN:
+            ImGui::TextDisabled("  SDL_GPU_DRIVER overrides this setting");
+            break;
+        default:
+            break;
+        }
+    }
+    ImGui::Separator();
 
     ImGui::TextDisabled("Render resolution");
     {

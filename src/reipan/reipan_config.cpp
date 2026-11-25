@@ -24,6 +24,7 @@ ReiPan_Config reipan_config = {
         /* .window_mode       = */ REIPAN_WINDOW_MODE_WINDOWED,
         /* .window_width      = */ 1280,
         /* .window_height     = */ 896,
+        /* .backend           = */ REIPAN_BACKEND_AUTO,
         /* .render_mode       = */ REIPAN_RENDER_RES_MATCH_WINDOW,
         /* .render_scale      = */ 1.0f,
         /* .upscale_filter    = */ REIPAN_RENDER_FILTER_LINEAR,
@@ -190,6 +191,17 @@ const EnumName kWindowModes[] = {
     {"borderless", REIPAN_WINDOW_MODE_BORDERLESS},
     /* Accepted on read, never written: what someone would type by hand. */
     {"fullscreen", REIPAN_WINDOW_MODE_BORDERLESS},
+    {nullptr, 0},
+};
+
+const EnumName kBackends[] = {
+    {"auto", REIPAN_BACKEND_AUTO},
+    {"direct3d12", REIPAN_BACKEND_D3D12},
+    {"vulkan", REIPAN_BACKEND_VULKAN},
+    {"metal", REIPAN_BACKEND_METAL},
+    /* Accepted on read, never written: what someone would type by hand. */
+    {"d3d12", REIPAN_BACKEND_D3D12},
+    {"dx12", REIPAN_BACKEND_D3D12},
     {nullptr, 0},
 };
 
@@ -1313,6 +1325,7 @@ static void ConfigLoadOnce(void)
     ReadEnum("window", "mode", kWindowModes, &r->window_mode);
     ReadInt("window", "width", &r->window_width);
     ReadInt("window", "height", &r->window_height);
+    ReadEnum("render", "backend", kBackends, &r->backend);
     ReadEnum("render", "mode", kRenderModes, &r->render_mode);
     ReadFloat("render", "scale", &r->render_scale);
     ReadEnum("render", "upscale_filter", kFilters, &r->upscale_filter);
@@ -1611,6 +1624,12 @@ int ReiPan_ConfigSave(void)
         "height = %d\n"
         "\n"
         "[render]\n"
+        "; Graphics API: auto | direct3d12 | vulkan | metal. Read at startup.\n"
+        ";   auto takes the first one that works here. One that cannot be\n"
+        ";   started falls back to it; one that starts and then misbehaves\n"
+        ";   is undone by writing auto.\n"
+        ";   SDL_GPU_DRIVER overrides it for one run.\n"
+        "backend = %s\n"
         "; match_window | native | window_scale\n"
         ";   native rasterises at 640x448 x scale, i.e. PS2 pixel density\n"
         "mode = %s\n"
@@ -1772,6 +1791,7 @@ int ReiPan_ConfigSave(void)
         EnumToName(kWindowModes, r->window_mode),
         r->window_width,
         r->window_height,
+        EnumToName(kBackends, r->backend),
         EnumToName(kRenderModes, r->render_mode),
         (double)r->render_scale,
         EnumToName(kFilters, r->upscale_filter),
@@ -1930,6 +1950,7 @@ void ReiPan_ConfigApply(void)
     /* Through the setters, so their clamps are the only place a range is
      * enforced and a hand-edited file cannot put the renderer in a state the
      * UI could not. */
+    ReiPan_RendererSetBackend(r->backend);
     ReiPan_RendererSetAspectMode(r->aspect_mode, r->aspect_ratio);
     ReiPan_RendererSetRenderResolution(r->render_mode, r->render_scale);
     ReiPan_RendererSetUpscaleFilter(r->upscale_filter);
@@ -1993,6 +2014,9 @@ void ReiPan_ConfigCapture(void)
 {
     ReiPan_ConfigRenderer *r = &reipan_config.renderer;
 
+    /* The requested backend, not the one the device runs, for the reason the
+     * sample count below is the requested one. */
+    r->backend = ReiPan_RendererGetBackend();
     ReiPan_RendererGetAspectMode(&r->aspect_mode, &r->aspect_ratio);
     ReiPan_RendererGetRenderResolution(&r->render_mode, &r->render_scale);
     r->upscale_filter = ReiPan_RendererGetUpscaleFilter();

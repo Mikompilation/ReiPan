@@ -2506,6 +2506,31 @@ float g_render_res_scale = 1.0f;
 int g_upscale_filter = REIPAN_RENDER_FILTER_LINEAR;
 bool g_smooth_2d = true;
 int g_window_mode = REIPAN_WINDOW_MODE_WINDOWED;
+
+/* The graphics API asked for, what the running device was created from, and
+ * how that went.  See ReiPan_RendererSetBackend() in the header. */
+int g_backend = REIPAN_BACKEND_AUTO;
+int g_backend_started = REIPAN_BACKEND_AUTO;
+bool g_backend_fell_back;
+bool g_backend_overridden;
+
+struct BackendInfo
+{
+    int backend;
+    const char *driver;     /* SDL_GPU's name for it */
+    const char *label;
+};
+
+const BackendInfo kBackendInfo[] = {
+    {REIPAN_BACKEND_AUTO, nullptr, "Auto"},
+    {REIPAN_BACKEND_D3D12, "direct3d12", "Direct3D 12"},
+    {REIPAN_BACKEND_VULKAN, "vulkan", "Vulkan"},
+    {REIPAN_BACKEND_METAL, "metal", "Metal"},
+};
+static_assert(sizeof(kBackendInfo) / sizeof(kBackendInfo[0]) ==
+                  REIPAN_BACKEND_COUNT,
+              "kBackendInfo is indexed by REIPAN_BACKEND_*");
+
 int g_aspect_mode = REIPAN_ASPECT_AUTO;
 float g_aspect_custom = 16.0f / 9.0f;
 /* Last size the window had while not fullscreen; seeded from the config before
@@ -10179,6 +10204,31 @@ void LogRendererBanner()
 }
 
 /*
+ * A device on the backend SDL names `driver` -- any, when null -- with the
+ * window claimed for it.  Null when either fails, with nothing left behind, so
+ * the caller can try another.
+ */
+SDL_GPUDevice *CreateClaimedDevice(const char *driver)
+{
+    const SDL_GPUShaderFormat formats = SDL_GPU_SHADERFORMAT_SPIRV |
+                                        SDL_GPU_SHADERFORMAT_DXIL |
+                                        SDL_GPU_SHADERFORMAT_MSL;
+    SDL_GPUDevice *device = SDL_CreateGPUDevice(formats, false, driver);
+    if (device == nullptr)
+    {
+        LogSdlError("SDL_CreateGPUDevice");
+        return nullptr;
+    }
+    if (!SDL_ClaimWindowForGPUDevice(device, g_window))
+    {
+        LogSdlError("SDL_ClaimWindowForGPUDevice");
+        SDL_DestroyGPUDevice(device);
+        return nullptr;
+    }
+    return device;
+}
+
+/*
  * SDL, the window and the GPU device with the window claimed for it.  Run on
  * the main thread through ReiPan_HostRunOnMainThread: SDL requires the video
  * subsystem, the window and SDL_ClaimWindowForGPUDevice on the window's
@@ -10207,23 +10257,22 @@ void CreateWindowAndDevice(void *ok)
      * final size rather than at the windowed one and immediately resized. */
     ApplyWindowMode();
 
-    SDL_GPUShaderFormat formats = SDL_GPU_SHADERFORMAT_SPIRV |
-                                  SDL_GPU_SHADERFORMAT_DXIL |
-                                  SDL_GPU_SHADERFORMAT_MSL;
-    g_device = SDL_CreateGPUDevice(formats, false, nullptr);
-    if (g_device == nullptr)
+    g_backend_started = g_backend;
+    /* SDL reads this hint (the SDL_GPU_DRIVER variable) ahead of the name it
+     * is given, so a fallback would only ask it for the same thing again. */
+    g_backend_overridden = SDL_GetHint(SDL_HINT_GPU_DRIVER) != nullptr;
+    g_device = CreateClaimedDevice(kBackendInfo[g_backend].driver);
+    if (g_device == nullptr && g_backend != REIPAN_BACKEND_AUTO &&
+        !g_backend_overridden)
     {
-        LogSdlError("SDL_CreateGPUDevice");
-        return;
+        SDL_Log("ReiPan SDL_GPU: the %s backend could not be started; "
+                "choosing one automatically",
+                kBackendInfo[g_backend].label);
+        g_backend_fell_back = true;
+        g_device = CreateClaimedDevice(nullptr);
     }
 
-    if (!SDL_ClaimWindowForGPUDevice(g_device, g_window))
-    {
-        LogSdlError("SDL_ClaimWindowForGPUDevice");
-        return;
-    }
-
-    *(bool *)ok = true;
+    *(bool *)ok = g_device != nullptr;
 }
 
 bool EnsureRenderer()
@@ -10247,8 +10296,9 @@ bool EnsureRenderer()
     }
     /* A partial initialization is not a usable renderer.  In particular, a
      * failed cached-layout pipeline must never be treated as a valid null
-     * pipeline merely because device creation succeeded. */
-    if (g_device != nullptr)
+     * pipeline merely because device creation succeeded.  The window covers a
+     * device that could not be made at all: asking again would open another. */
+    if (g_device != nullptr || g_window != nullptr)
     {
         return false;
     }
@@ -13567,6 +13617,84 @@ void ReiPan_RendererGetGrade(float *brightness, float *contrast, float *gamma,
     {
         *saturation = g_grade_saturation;
     }
+}
+
+void ReiPan_RendererSetBackend(int backend)
+{
+    /* Recorded only, always: CreateWindowAndDevice() reads it once. */
+    g_backend = backend > REIPAN_BACKEND_AUTO && backend < REIPAN_BACKEND_COUNT
+                    ? backend
+                    : REIPAN_BACKEND_AUTO;
+}
+
+int ReiPan_RendererGetBackend(void)
+{
+    return g_backend;
+}
+
+int ReiPan_RendererGetBackendActive(void)
+{
+    const char *driver =
+        g_device != nullptr ? SDL_GetGPUDeviceDriver(g_device) : nullptr;
+    if (driver != nullptr)
+    {
+        for (const BackendInfo &info : kBackendInfo)
+        {
+            if (info.driver != nullptr && SDL_strcmp(info.driver, driver) == 0)
+            {
+                return info.backend;
+            }
+        }
+    }
+    return REIPAN_BACKEND_AUTO;
+}
+
+int ReiPan_RendererBackendIsAvailable(int backend)
+{
+    if (backend == REIPAN_BACKEND_AUTO)
+    {
+        return 1;
+    }
+    if (backend < 0 || backend >= REIPAN_BACKEND_COUNT)
+    {
+        return 0;
+    }
+    for (int i = 0; i < SDL_GetNumGPUDrivers(); i++)
+    {
+        if (SDL_strcmp(SDL_GetGPUDriver(i), kBackendInfo[backend].driver) == 0)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+const char *ReiPan_RendererGetBackendLabel(int backend)
+{
+    return backend >= 0 && backend < REIPAN_BACKEND_COUNT
+               ? kBackendInfo[backend].label
+               : kBackendInfo[REIPAN_BACKEND_AUTO].label;
+}
+
+int ReiPan_RendererGetBackendStatus(void)
+{
+    if (g_device == nullptr)
+    {
+        return REIPAN_BACKEND_STATUS_ACTIVE;
+    }
+    if (g_backend_overridden)
+    {
+        return REIPAN_BACKEND_STATUS_OVERRIDDEN;
+    }
+    if (g_backend != g_backend_started)
+    {
+        /* Asking for the one AUTO already landed on changes nothing. */
+        return g_backend != ReiPan_RendererGetBackendActive()
+                   ? REIPAN_BACKEND_STATUS_RESTART
+                   : REIPAN_BACKEND_STATUS_ACTIVE;
+    }
+    return g_backend_fell_back ? REIPAN_BACKEND_STATUS_FALLBACK
+                               : REIPAN_BACKEND_STATUS_ACTIVE;
 }
 
 void ReiPan_RendererSetWindowMode(int mode)
