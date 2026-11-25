@@ -221,6 +221,18 @@ typedef struct ReiPan_ConfigMouse
     int   bind[5];           /* REIPAN_MOUSE_ACT_* order                    */
 } ReiPan_ConfigMouse;
 
+/*
+ * Gyro aiming (io/reipan_gyro.h), section [gyro].  Every field is 4 bytes.
+ */
+typedef struct ReiPan_ConfigGyro
+{
+    int   look;
+    float sensitivity;
+    int   turn;              /* REIPAN_GYRO_TURN_*, written by name         */
+    int   invert_x;
+    int   invert_y;
+} ReiPan_ConfigGyro;
+
 typedef struct ReiPan_Config
 {
     /* Order matters: reipan_config.cpp's defaults are a positional
@@ -232,6 +244,7 @@ typedef struct ReiPan_Config
     int profiler_fps_only;
     ReiPan_ConfigCamera   camera;
     ReiPan_ConfigMouse    mouse;
+    ReiPan_ConfigGyro     gyro;
     int overlay_menu_bar;    /* the overlay's bar is up (F1), [overlay]     */
 } ReiPan_Config;
 

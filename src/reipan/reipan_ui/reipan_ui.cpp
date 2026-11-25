@@ -14,6 +14,7 @@
 #include "../debug/reipan_warp.h"
 #include "../gameplay/reipan_over_shoulder.h"
 #include "../io/reipan_game_mouse.h"
+#include "../io/reipan_gyro.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -1154,10 +1155,13 @@ void PersistSettingsIfChanged()
                   "ReiPan_ConfigCamera gained padding; compare by field");
     static_assert(sizeof(ReiPan_ConfigMouse) == 8 * sizeof(int),
                   "ReiPan_ConfigMouse gained padding; compare by field");
+    static_assert(sizeof(ReiPan_ConfigGyro) == 5 * sizeof(int),
+                  "ReiPan_ConfigGyro gained padding; compare by field");
 
     ReiPan_ConfigRenderer before = reipan_config.renderer;
     ReiPan_ConfigCamera   camera_before = reipan_config.camera;
     ReiPan_ConfigMouse    mouse_before = reipan_config.mouse;
+    ReiPan_ConfigGyro     gyro_before = reipan_config.gyro;
     ReiPan_ConfigCapture();
 
     const Uint64 now = SDL_GetTicks();
@@ -1166,7 +1170,9 @@ void PersistSettingsIfChanged()
         std::memcmp(&camera_before, &reipan_config.camera,
                     sizeof(camera_before)) != 0 ||
         std::memcmp(&mouse_before, &reipan_config.mouse,
-                    sizeof(mouse_before)) != 0)
+                    sizeof(mouse_before)) != 0 ||
+        std::memcmp(&gyro_before, &reipan_config.gyro,
+                    sizeof(gyro_before)) != 0)
     {
         g_settings_dirty_since = now != 0 ? now : 1;
         return;
@@ -2246,6 +2252,134 @@ void DrawMouseSettingsMenu()
     ImGui::EndMenu();
 }
 
+/* Settings > Controls > Gyro.  The status lines are what make it checkable from
+ * here: whether the pad has a gyro at all, whether it is reporting, which way
+ * a turn reads, and whether the drift has been learned. */
+void DrawGyroSettingsMenu()
+{
+    if (!ImGui::BeginMenu("Gyro"))
+    {
+        return;
+    }
+
+    ReiPan_GyroSettings s;
+    ReiPan_GyroGetSettings(&s);
+    ReiPan_GyroStatus status;
+    ReiPan_GyroGetStatus(&status);
+    bool changed = false;
+
+    bool look = s.look != 0;
+    if (ImGui::MenuItem("Aim the Camera Obscura with the gyro", nullptr, &look))
+    {
+        s.look = look ? 1 : 0;
+        changed = true;
+    }
+    if (status.has_gamepad == 0)
+    {
+        ImGui::TextDisabled("   no gamepad connected");
+    }
+    else if (status.has_gyro == 0)
+    {
+        ImGui::TextDisabled("   this gamepad reports no gyro");
+    }
+    else if (status.active == 0)
+    {
+        ImGui::TextDisabled("   gyro off");
+    }
+    else if (status.rate_hz > 0.0f)
+    {
+        ImGui::TextDisabled("   gyro reporting at %.0f Hz", (double)status.rate_hz);
+    }
+    else
+    {
+        ImGui::TextDisabled("   gyro reporting");
+    }
+
+    ImGui::BeginDisabled(!look);
+    ImGui::PushItemWidth(200.0f);
+    changed |= ImGui::SliderFloat("Sensitivity", &s.sensitivity,
+                                  REIPAN_GYRO_SENSITIVITY_MIN,
+                                  REIPAN_GYRO_SENSITIVITY_MAX, "%.2fx",
+                                  ImGuiSliderFlags_Logarithmic);
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("1.00x turns the view as far as the pad turns.");
+    }
+    ImGui::PopItemWidth();
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Turn with");
+    if (ImGui::MenuItem("   Yaw: point the pad left and right", nullptr,
+                        s.turn == REIPAN_GYRO_TURN_YAW))
+    {
+        s.turn = REIPAN_GYRO_TURN_YAW;
+        changed = true;
+    }
+    if (ImGui::MenuItem("   Roll: tip the pad sideways", nullptr,
+                        s.turn == REIPAN_GYRO_TURN_ROLL))
+    {
+        s.turn = REIPAN_GYRO_TURN_ROLL;
+        changed = true;
+    }
+    bool invert_x = s.invert_x != 0;
+    if (ImGui::MenuItem("Invert X", nullptr, &invert_x))
+    {
+        s.invert_x = invert_x ? 1 : 0;
+        changed = true;
+    }
+    bool invert_y = s.invert_y != 0;
+    if (ImGui::MenuItem("Invert Y", nullptr, &invert_y))
+    {
+        s.invert_y = invert_y ? 1 : 0;
+        changed = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::Separator();
+
+    /* Live, before sensitivity, so it reads the same whatever the slider says:
+     * turning the pad right should read positive yaw, lifting its far edge
+     * positive pitch. */
+    if (status.active != 0)
+    {
+        ImGui::Text("Now  yaw %+7.1f  pitch %+7.1f  deg/s%s",
+                    (double)status.rate_yaw_deg, (double)status.rate_pitch_deg,
+                    status.aiming != 0 ? "   aiming" : "");
+        if (status.calibration < 1.0f)
+        {
+            ImGui::TextColored(ImVec4(0.94f, 0.58f, 0.36f, 1.0f),
+                               "Learning drift: set the pad down and keep it "
+                               "still (%.0f%%)",
+                               (double)(status.calibration * 100.0f));
+        }
+        else
+        {
+            ImGui::TextDisabled("Drift learned: %+.2f / %+.2f / %+.2f deg/s "
+                                "(pitch / yaw / roll)",
+                                (double)status.bias_deg[0],
+                                (double)status.bias_deg[1],
+                                (double)status.bias_deg[2]);
+        }
+        if (ImGui::SmallButton("Recalibrate"))
+        {
+            ReiPan_GyroRecalibrate();
+        }
+        ImGui::Separator();
+    }
+
+    if (ImGui::MenuItem("Reset gyro", nullptr, false,
+                        ReiPan_GyroSettingsAreDefault() == 0))
+    {
+        ReiPan_GyroDefaults(&s);
+        changed = true;
+    }
+
+    if (changed)
+    {
+        ReiPan_GyroSetSettings(&s);
+    }
+    ImGui::EndMenu();
+}
+
 /* Settings > Controls.  The rebinding itself is a window -- twenty rows of
  * cells to click do not fit in a menu -- so this is the way to it, plus the
  * reset worth having without opening it. */
@@ -2259,6 +2393,7 @@ void DrawControlsSettingsMenu()
     ImGui::MenuItem("Rebind keyboard and gamepad...", nullptr,
                     &g_show_controls);
     DrawMouseSettingsMenu();
+    DrawGyroSettingsMenu();
     ImGui::Separator();
     if (ImGui::MenuItem("Reset all bindings", nullptr, false,
                         ReiPan_InputBindingsAreDefault() == 0))

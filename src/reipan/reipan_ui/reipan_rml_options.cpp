@@ -7,6 +7,7 @@
 #include "../rendering/reipan_renderer.h"
 #include "../gameplay/reipan_over_shoulder.h"
 #include "../io/reipan_game_mouse.h"
+#include "../io/reipan_gyro.h"
 
 #include "outgame/option.h"             // GetOptionWrk, OptionInit, OptionApplySound
 
@@ -59,12 +60,13 @@ struct Row
     std::function<int()> get;
     std::function<void(int)> set;
 
-    /* Slider.  `step` is added. */
+    /* Slider.  `step` is added -- or, logarithmic, multiplied. */
     std::function<float()> get_value;
     std::function<void(float)> set_value;
     float min = 0.0f;
     float max = 1.0f;
     float step = 0.05f;
+    bool logarithmic = false;
     std::function<std::string(float)> format;
 
     /* Action. */
@@ -868,6 +870,51 @@ void EditMouse(const std::function<void(ReiPan_GameMouseSettings &)> &edit)
     ReiPan_GameMouseSetSettings(&s);
 }
 
+/* A gamepad's gyro (io/reipan_gyro.h), saved the same way. */
+ReiPan_GyroSettings GyroSettings()
+{
+    ReiPan_GyroSettings s;
+    ReiPan_GyroGetSettings(&s);
+    return s;
+}
+
+void EditGyro(const std::function<void(ReiPan_GyroSettings &)> &edit)
+{
+    ReiPan_GyroSettings s = GyroSettings();
+    edit(s);
+    ReiPan_GyroSetSettings(&s);
+}
+
+bool GyroOn()
+{
+    return GyroSettings().look != 0;
+}
+
+std::string GyroHelp()
+{
+    ReiPan_GyroStatus status;
+    ReiPan_GyroGetStatus(&status);
+    std::string text = "Aim the raised Camera Obscura by moving the "
+                       "controller, alongside the stick. ";
+    if (status.has_gamepad == 0)
+    {
+        text += "No controller is connected.";
+    }
+    else if (status.has_gyro == 0)
+    {
+        text += "This controller has no gyro.";
+    }
+    else if (status.active != 0 && status.calibration < 1.0f)
+    {
+        text += "Learning its drift: set it down and keep it still.";
+    }
+    else
+    {
+        text += "Its drift is learned whenever it lies still.";
+    }
+    return text;
+}
+
 /* The game's Game Play and Controller screens (phases 22 and 23), and the
  * port's bindings. */
 Page ControlsPage()
@@ -936,6 +983,68 @@ Page ControlsPage()
                 s.camera_toggle = value != 0 ? 1 : 0;
             });
         }));
+
+    rows.push_back(Heading("Gyro"));
+    rows.push_back(Toggle(
+        "Gyro aiming", GyroHelp, GyroOn, [](bool on) {
+            EditGyro([on](ReiPan_GyroSettings &s) { s.look = on ? 1 : 0; });
+        }));
+    /* Sensitivities span two orders of magnitude, so each step multiplies. */
+    Row gyro_sensitivity = When(
+        Slider("Gyro sensitivity",
+               Fixed("1.00x turns the view as far as the controller turns."),
+               REIPAN_GYRO_SENSITIVITY_MIN, REIPAN_GYRO_SENSITIVITY_MAX, 1.1f,
+               [] { return GyroSettings().sensitivity; },
+               [](float value) {
+                   EditGyro([value](ReiPan_GyroSettings &s) {
+                       s.sensitivity = value;
+                   });
+               },
+               Format("%.2fx")),
+        GyroOn);
+    gyro_sensitivity.logarithmic = true;
+    rows.push_back(std::move(gyro_sensitivity));
+    rows.push_back(When(
+        Choice("Turn with",
+               Fixed("Yaw: point the controller left and right. Roll: tip it "
+                     "sideways like a wheel."),
+               {"Yaw", "Roll"}, [] { return GyroSettings().turn; },
+               [](int value) {
+                   EditGyro([value](ReiPan_GyroSettings &s) { s.turn = value; });
+               }),
+        GyroOn));
+    rows.push_back(When(
+        Toggle("Invert gyro X", Fixed("Swap left and right."),
+               [] { return GyroSettings().invert_x != 0; },
+               [](bool on) {
+                   EditGyro([on](ReiPan_GyroSettings &s) {
+                       s.invert_x = on ? 1 : 0;
+                   });
+               }),
+        GyroOn));
+    rows.push_back(When(
+        Toggle("Invert gyro Y", Fixed("Swap up and down."),
+               [] { return GyroSettings().invert_y != 0; },
+               [](bool on) {
+                   EditGyro([on](ReiPan_GyroSettings &s) {
+                       s.invert_y = on ? 1 : 0;
+                   });
+               }),
+        GyroOn));
+    rows.push_back(When(
+        Action("Recalibrate gyro",
+               Fixed("Forget the learned drift; set the controller down and "
+                     "keep it still to learn it again."),
+               "Recalibrate", [] { ReiPan_GyroRecalibrate(); }),
+        GyroOn));
+    rows.push_back(When(
+        Action("Reset gyro", Fixed("Gyro aiming back to its defaults."),
+               "Reset", [] {
+                   EditGyro([](ReiPan_GyroSettings &s) {
+                       ReiPan_GyroDefaults(&s);
+                   });
+               }),
+        [] { return ReiPan_GyroSettingsAreDefault() == 0; }));
 
     rows.push_back(Heading("Bindings"));
     Row reset = When(
@@ -1203,12 +1312,22 @@ void BuildPages()
 
 float SliderFraction(const Row &row, float value)
 {
+    if (row.logarithmic)
+    {
+        return (std::log(value) - std::log(row.min)) /
+               (std::log(row.max) - std::log(row.min));
+    }
     return (value - row.min) / (row.max - row.min);
 }
 
 float SliderFromFraction(const Row &row, float fraction)
 {
     fraction = std::clamp(fraction, 0.0f, 1.0f);
+    if (row.logarithmic)
+    {
+        return std::exp(std::log(row.min) +
+                        fraction * (std::log(row.max) - std::log(row.min)));
+    }
     const float value = row.min + fraction * (row.max - row.min);
     return row.min + std::round((value - row.min) / row.step) * row.step;
 }
@@ -1254,9 +1373,18 @@ void Adjust(Row &row, int direction)
     else if (row.kind == RowKind::Slider)
     {
         const float before = row.get_value();
-        /* On the step grid, so repeated steps do not drift. */
-        const float steps = std::round((before - row.min) / row.step);
-        SetSlider(row, row.min + (steps + (float)direction) * row.step);
+        float value;
+        if (row.logarithmic)
+        {
+            value = before * std::pow(row.step, (float)direction);
+        }
+        else
+        {
+            /* On the step grid, so repeated steps do not drift. */
+            const float steps = std::round((before - row.min) / row.step);
+            value = row.min + (steps + (float)direction) * row.step;
+        }
+        SetSlider(row, value);
         if (row.get_value() != before)
         {
             ReiPanRmlCommon::PlayCursor();

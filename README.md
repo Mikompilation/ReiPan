@@ -39,6 +39,14 @@ the automatic choice. If one starts but misbehaves, set `backend = auto` under
 `[render]` in `reipan.ini`, or start ReiPan once with `SDL_GPU_DRIVER` set to
 `direct3d12`, `vulkan` or `metal`.
 
+## Gyro aiming
+
+While the Camera Obscura is raised, a controller with a gyro (DualShock 4,
+DualSense, Switch Pro, Steam Controller, ...) aims it by being turned, alongside
+the stick and the mouse. It is on by default; **Options → Controls → Gyro** sets
+the sensitivity, yaw or roll to turn, and the inversions. The gyro's drift is
+learned whenever the controller lies still with the Camera Obscura down.
+
 ## PS2 save transfer
 
 Open **Settings → PS2 save transfer…** to transfer European, US or Japanese

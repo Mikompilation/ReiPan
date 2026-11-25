@@ -6,6 +6,7 @@
 #include "rendering/reipan_renderer.h"
 #include "gameplay/reipan_over_shoulder.h"
 #include "io/reipan_game_mouse.h"
+#include "io/reipan_gyro.h"
 
 #include <SDL3/SDL_log.h>
 #include <SDL3/SDL_stdinc.h>
@@ -166,6 +167,14 @@ ReiPan_Config reipan_config = {
                                      REIPAN_MOUSE_SRC_MIDDLE, REIPAN_MOUSE_SRC_WHEEL_UP,
                                      REIPAN_MOUSE_SRC_WHEEL_DOWN },
     },
+    /* .gyro = */ {
+        /* MioPan's: on, for a pad that has one. */
+        /* .look              = */ 1,
+        /* .sensitivity       = */ REIPAN_GYRO_SENSITIVITY_DEFAULT,
+        /* .turn              = */ REIPAN_GYRO_TURN_YAW,
+        /* .invert_x          = */ 0,
+        /* .invert_y          = */ 0,
+    },
     /* Up on a first run, so the settings are there to be found. */
     /* .overlay_menu_bar = */ 1,
 };
@@ -281,6 +290,12 @@ const EnumName kTitleMotions[] = {
 const EnumName kTitleEasings[] = {
     {"smooth", REIPAN_TITLE_EASING_SMOOTH},
     {"linear", REIPAN_TITLE_EASING_LINEAR},
+    {nullptr, 0},
+};
+
+const EnumName kGyroTurns[] = {
+    {"yaw", REIPAN_GYRO_TURN_YAW},
+    {"roll", REIPAN_GYRO_TURN_ROLL},
     {nullptr, 0},
 };
 
@@ -1432,6 +1447,13 @@ static void ConfigLoadOnce(void)
         }
     }
 
+    ReiPan_ConfigGyro *gyro = &reipan_config.gyro;
+    ReadInt("gyro", "look", &gyro->look);
+    ReadFloat("gyro", "sensitivity", &gyro->sensitivity);
+    ReadEnum("gyro", "turn", kGyroTurns, &gyro->turn);
+    ReadInt("gyro", "invert_x", &gyro->invert_x);
+    ReadInt("gyro", "invert_y", &gyro->invert_y);
+
     LoadInputBindings();
     ReadTitle(&reipan_config.title, true);
 
@@ -1546,6 +1568,33 @@ std::string BuildMouseSection()
     return text;
 }
 
+/* [gyro]. */
+std::string BuildGyroSection()
+{
+    const ReiPan_ConfigGyro *g = &reipan_config.gyro;
+    char text[2048];
+    std::snprintf(
+        text, sizeof(text),
+        "\n[gyro]\n"
+        "; While the Camera Obscura is raised, a gamepad with a gyroscope aims\n"
+        ";   it by being turned; the stick still works alongside it. The\n"
+        ";   gyro's drift is learned whenever the pad lies still with the\n"
+        ";   Camera Obscura down. 0 off, 1 on.\n"
+        "look = %d\n"
+        "; Multiplies the pad's own rotation: 1.0 turns the view as far as the\n"
+        ";   pad turned. 0.1..8.\n"
+        "sensitivity = %.3f\n"
+        "; What turns it left and right: yaw (point the pad left and right) or\n"
+        ";   roll (tip it sideways, like a wheel).\n"
+        "turn = %s\n"
+        "; 1 swaps left and right, or up and down.\n"
+        "invert_x = %d\n"
+        "invert_y = %d\n",
+        g->look, (double)g->sensitivity, EnumToName(kGyroTurns, g->turn),
+        g->invert_x, g->invert_y);
+    return text;
+}
+
 } // namespace
 
 int ReiPan_ConfigSave(void)
@@ -1593,6 +1642,7 @@ int ReiPan_ConfigSave(void)
      * regenerating it on the resize pass would be pure waste. */
     const std::string input_section = BuildInputSection();
     const std::string camera_section = BuildCameraSection() + BuildMouseSection() +
+        BuildGyroSection() +
         "\n[overlay]\n"
         "; The menu bar F1 shows and hides, as it was left.\n"
         "menu_bar = " + std::to_string(reipan_config.overlay_menu_bar != 0 ? 1 : 0) +
@@ -2008,6 +2058,15 @@ void ReiPan_ConfigApply(void)
         gm.bind[i] = m->bind[i];
     }
     ReiPan_GameMouseSetSettings(&gm);
+
+    const ReiPan_ConfigGyro *g = &reipan_config.gyro;
+    ReiPan_GyroSettings      gs;
+    gs.look = g->look;
+    gs.sensitivity = g->sensitivity;
+    gs.turn = g->turn;
+    gs.invert_x = g->invert_x;
+    gs.invert_y = g->invert_y;
+    ReiPan_GyroSetSettings(&gs);
 }
 
 void ReiPan_ConfigCapture(void)
@@ -2072,6 +2131,15 @@ void ReiPan_ConfigCapture(void)
     {
         m->bind[i] = gm.bind[i];
     }
+
+    ReiPan_GyroSettings gs;
+    ReiPan_GyroGetSettings(&gs);
+    ReiPan_ConfigGyro *g = &reipan_config.gyro;
+    g->look = gs.look;
+    g->sensitivity = gs.sensitivity;
+    g->turn = gs.turn;
+    g->invert_x = gs.invert_x;
+    g->invert_y = gs.invert_y;
 
     /* The windowed size, which the renderer latches while the window is not
      * fullscreen.  Reading the live window instead would store the desktop

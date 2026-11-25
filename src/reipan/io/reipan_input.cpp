@@ -3,6 +3,7 @@
 #include "reipan_file.h"
 #include "reipan_menu_mouse.h"
 #include "reipan_game_mouse.h"
+#include "reipan_gyro.h"
 #include "reipan_paths.h"
 #include "../os/reipan_host.h"
 
@@ -236,6 +237,7 @@ static void CloseGamepad(void)
         SDL_RumbleGamepad(s_gamepad, 0, 0, 0);
         SDL_CloseGamepad(s_gamepad);
         s_gamepad = 0;
+        ReiPan_GyroSetGamepad(0);
     }
 }
 
@@ -378,6 +380,7 @@ static int SelectGamepad(void)
     if (s_gamepad != 0)
     {
         SDL_Log("ReiPan: using gamepad \"%s\"", SDL_GetGamepadName(s_gamepad));
+        ReiPan_GyroSetGamepad(s_gamepad);
     }
 
     return s_gamepad != 0 ? 1 : 0;
@@ -465,6 +468,7 @@ void ReiPan_InputUpdate(void)
     SelectGamepad();
     ReiPan_MenuMousePoll();
     ReiPan_GameMousePoll();     /* after the menus: they have the mouse first */
+    ReiPan_GyroPoll();
     AdvanceStickRamps();
 }
 
