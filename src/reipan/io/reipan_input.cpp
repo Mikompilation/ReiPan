@@ -4,6 +4,7 @@
 #include "reipan_menu_mouse.h"
 #include "reipan_game_mouse.h"
 #include "reipan_gyro.h"
+#include "reipan_haptics.h"
 #include "reipan_paths.h"
 #include "../os/reipan_host.h"
 
@@ -234,7 +235,7 @@ static void CloseGamepad(void)
 {
     if (s_gamepad != 0)
     {
-        SDL_RumbleGamepad(s_gamepad, 0, 0, 0);
+        ReiPan_HapticsSetGamepad(0);    /* stops the motors, so while it is open */
         SDL_CloseGamepad(s_gamepad);
         s_gamepad = 0;
         ReiPan_GyroSetGamepad(0);
@@ -381,6 +382,7 @@ static int SelectGamepad(void)
     {
         SDL_Log("ReiPan: using gamepad \"%s\"", SDL_GetGamepadName(s_gamepad));
         ReiPan_GyroSetGamepad(s_gamepad);
+        ReiPan_HapticsSetGamepad(s_gamepad);
     }
 
     return s_gamepad != 0 ? 1 : 0;
@@ -648,19 +650,13 @@ unsigned char ReiPan_InputStickValue(int index)
                                : digital_value);
 }
 
-int ReiPan_InputRumble(unsigned char large_on, unsigned char small_strength)
+int ReiPan_InputRumble(unsigned char small_on, unsigned char big_power)
 {
-    Uint16 low;
-    Uint16 high;
-
     if (OpenGamepad() == 0)
     {
         return 0;
     }
-
-    low = (Uint16)((unsigned int)small_strength * 257u);
-    high = large_on != 0 ? 0xffffu : 0u;
-    return SDL_RumbleGamepad(s_gamepad, low, high, 120) ? 1 : 0;
+    return ReiPan_HapticsMotors(small_on, big_power);
 }
 
 // ---------------------------------------------------------------------------

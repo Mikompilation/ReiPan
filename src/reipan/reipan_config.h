@@ -233,6 +233,19 @@ typedef struct ReiPan_ConfigGyro
     int   invert_y;
 } ReiPan_ConfigGyro;
 
+/*
+ * The controller's motors (io/reipan_haptics.h), section [rumble].  The game's
+ * own Vibration option is not here: it lives in the save.  Every field is 4
+ * bytes.
+ */
+typedef struct ReiPan_ConfigRumble
+{
+    float strength;          /* 0..1                                        */
+    int   triggers;
+    float trigger_strength;  /* 0..1                                        */
+    int   camera;            /* the Camera Obscura's cues too               */
+} ReiPan_ConfigRumble;
+
 typedef struct ReiPan_Config
 {
     /* Order matters: reipan_config.cpp's defaults are a positional
@@ -245,6 +258,7 @@ typedef struct ReiPan_Config
     ReiPan_ConfigCamera   camera;
     ReiPan_ConfigMouse    mouse;
     ReiPan_ConfigGyro     gyro;
+    ReiPan_ConfigRumble   rumble;
     int overlay_menu_bar;    /* the overlay's bar is up (F1), [overlay]     */
 } ReiPan_Config;
 

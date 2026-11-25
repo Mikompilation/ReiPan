@@ -47,6 +47,16 @@ the stick and the mouse. It is on by default; **Options → Controls → Gyro** 
 the sensitivity, yaw or roll to turn, and the inversions. The gyro's drift is
 learned whenever the controller lies still with the Camera Obscura down.
 
+## Trigger rumble
+
+A controller with motors behind its triggers (Xbox One and later) also plays there
+what the rumble is for: heartbeats, blows, a ghost's grip, thunder and the
+cutscenes. The grips shake as the game asks, and any other controller behaves as
+before. It is on by default; **Options → Controls → Rumble** sets the strengths,
+tests each motor, and can add the Camera Obscura (the shutter, the charge and
+shutter chances), which the original does not shake for. A controller that Steam
+Input stands in for only has its grips.
+
 ## PS2 save transfer
 
 Open **Settings → PS2 save transfer…** to transfer European, US or Japanese

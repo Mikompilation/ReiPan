@@ -8,6 +8,7 @@
 #include "../gameplay/reipan_over_shoulder.h"
 #include "../io/reipan_game_mouse.h"
 #include "../io/reipan_gyro.h"
+#include "../io/reipan_haptics.h"
 
 #include "outgame/option.h"             // GetOptionWrk, OptionInit, OptionApplySound
 
@@ -915,6 +916,76 @@ std::string GyroHelp()
     return text;
 }
 
+/* The controller's motors (io/reipan_haptics.h), saved the same way.  The
+ * game's Vibration, on the Game page, is the switch for all of them. */
+ReiPan_HapticsSettings RumbleSettings()
+{
+    ReiPan_HapticsSettings s;
+    ReiPan_HapticsGetSettings(&s);
+    return s;
+}
+
+void EditRumble(const std::function<void(ReiPan_HapticsSettings &)> &edit)
+{
+    ReiPan_HapticsSettings s = RumbleSettings();
+    edit(s);
+    ReiPan_HapticsSetSettings(&s);
+}
+
+bool RumbleOn()
+{
+    return GameOptions().vibration != 0;
+}
+
+bool TriggerRumbleOn()
+{
+    return RumbleOn() && RumbleSettings().triggers != 0;
+}
+
+std::string RumbleHelp()
+{
+    if (!RumbleOn())
+    {
+        return "Vibration is off on the Game page.";
+    }
+    return "How hard the controller shakes. 100% is as hard as the game asks.";
+}
+
+std::string TriggerRumbleHelp()
+{
+    ReiPan_HapticsStatus status;
+    ReiPan_HapticsGetStatus(&status);
+    std::string text = "Feel heartbeats, blows, a ghost's grip, thunder and the "
+                       "cutscenes in the triggers as well. ";
+    if (!RumbleOn())
+    {
+        text += "Vibration is off on the Game page.";
+    }
+    else if (status.has_gamepad == 0)
+    {
+        text += "No controller is connected.";
+    }
+    else if (status.triggers == REIPAN_TRIGGERS_SEARCHING)
+    {
+        text += "Looking for this controller's trigger motors: press a button "
+                "on it.";
+    }
+    else if (RumbleSettings().triggers == 0)
+    {
+        text += "For a controller with motors behind its triggers: Xbox One "
+                "and later.";
+    }
+    else if (status.triggers == REIPAN_TRIGGERS_NONE)
+    {
+        text += "This controller has no motors there.";
+    }
+    else
+    {
+        text += "On for this controller.";
+    }
+    return text;
+}
+
 /* The game's Game Play and Controller screens (phases 22 and 23), and the
  * port's bindings. */
 Page ControlsPage()
@@ -1045,6 +1116,64 @@ Page ControlsPage()
                    });
                }),
         [] { return ReiPan_GyroSettingsAreDefault() == 0; }));
+
+    rows.push_back(Heading("Rumble"));
+    rows.push_back(When(
+        Slider("Rumble strength", RumbleHelp, 0.0f, 1.0f, 0.05f,
+               [] { return RumbleSettings().strength; },
+               [](float value) {
+                   EditRumble([value](ReiPan_HapticsSettings &s) {
+                       s.strength = value;
+                   });
+               },
+               Percent(100.0f)),
+        RumbleOn));
+    rows.push_back(When(
+        Toggle("Trigger rumble", TriggerRumbleHelp,
+               [] { return RumbleSettings().triggers != 0; },
+               [](bool on) {
+                   EditRumble([on](ReiPan_HapticsSettings &s) {
+                       s.triggers = on ? 1 : 0;
+                   });
+               }),
+        RumbleOn));
+    rows.push_back(When(
+        Slider("Trigger strength",
+               Fixed("The triggers alone, on top of the rumble strength."), 0.0f,
+               1.0f, 0.05f, [] { return RumbleSettings().trigger_strength; },
+               [](float value) {
+                   EditRumble([value](ReiPan_HapticsSettings &s) {
+                       s.trigger_strength = value;
+                   });
+               },
+               Percent(100.0f)),
+        TriggerRumbleOn));
+    rows.push_back(When(
+        Toggle("Camera Obscura rumble",
+               Fixed("Feel the shutter, the charge and a shutter chance in the "
+                     "triggers. The original does not shake for these."),
+               [] { return RumbleSettings().camera != 0; },
+               [](bool on) {
+                   EditRumble([on](ReiPan_HapticsSettings &s) {
+                       s.camera = on ? 1 : 0;
+                   });
+               }),
+        TriggerRumbleOn));
+    rows.push_back(When(
+        Action("Test rumble",
+               Fixed("Each motor in turn: the left grip, the right grip, and "
+                     "with trigger rumble the left and right triggers."),
+               "Test", [] { ReiPan_HapticsTest(); }),
+        RumbleOn));
+    rows.push_back(When(
+        Action("Reset rumble", Fixed("The rumble settings above back to their "
+                                     "defaults."),
+               "Reset", [] {
+                   EditRumble([](ReiPan_HapticsSettings &s) {
+                       ReiPan_HapticsDefaults(&s);
+                   });
+               }),
+        [] { return ReiPan_HapticsSettingsAreDefault() == 0; }));
 
     rows.push_back(Heading("Bindings"));
     Row reset = When(

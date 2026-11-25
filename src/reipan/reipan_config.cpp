@@ -7,6 +7,7 @@
 #include "gameplay/reipan_over_shoulder.h"
 #include "io/reipan_game_mouse.h"
 #include "io/reipan_gyro.h"
+#include "io/reipan_haptics.h"
 
 #include <SDL3/SDL_log.h>
 #include <SDL3/SDL_stdinc.h>
@@ -174,6 +175,14 @@ ReiPan_Config reipan_config = {
         /* .turn              = */ REIPAN_GYRO_TURN_YAW,
         /* .invert_x          = */ 0,
         /* .invert_y          = */ 0,
+    },
+    /* .rumble = */ {
+        /* As hard as the game asks, with the triggers of a pad that has motors
+         * there; the Camera Obscura's are not the original's. */
+        /* .strength          = */ 1.0f,
+        /* .triggers          = */ 1,
+        /* .trigger_strength  = */ 1.0f,
+        /* .camera            = */ 0,
     },
     /* Up on a first run, so the settings are there to be found. */
     /* .overlay_menu_bar = */ 1,
@@ -1454,6 +1463,12 @@ static void ConfigLoadOnce(void)
     ReadInt("gyro", "invert_x", &gyro->invert_x);
     ReadInt("gyro", "invert_y", &gyro->invert_y);
 
+    ReiPan_ConfigRumble *rumble = &reipan_config.rumble;
+    ReadFloat("rumble", "strength", &rumble->strength);
+    ReadInt("rumble", "triggers", &rumble->triggers);
+    ReadFloat("rumble", "trigger_strength", &rumble->trigger_strength);
+    ReadInt("rumble", "camera", &rumble->camera);
+
     LoadInputBindings();
     ReadTitle(&reipan_config.title, true);
 
@@ -1595,6 +1610,31 @@ std::string BuildGyroSection()
     return text;
 }
 
+/* [rumble]. */
+std::string BuildRumbleSection()
+{
+    const ReiPan_ConfigRumble *r = &reipan_config.rumble;
+    char text[2048];
+    std::snprintf(
+        text, sizeof(text),
+        "\n[rumble]\n"
+        "; How hard the controller shakes, 0..1: 1 is as hard as the game asks.\n"
+        ";   The game's own Vibration option turns it off altogether.\n"
+        "strength = %.3f\n"
+        "; 1 also plays what the shaking is for -- heartbeats, blows, a ghost's\n"
+        ";   grip, thunder, the cutscenes -- on the motors behind the triggers of\n"
+        ";   a controller that has them (Xbox One and later). 0 leaves every\n"
+        ";   controller to the game's two motors.\n"
+        "triggers = %d\n"
+        "; The trigger motors alone, 0..1, on top of strength.\n"
+        "trigger_strength = %.3f\n"
+        "; 1 also plays the Camera Obscura there: the shutter, the charge and a\n"
+        ";   shutter chance. The original does not shake for these.\n"
+        "camera = %d\n",
+        (double)r->strength, r->triggers, (double)r->trigger_strength, r->camera);
+    return text;
+}
+
 } // namespace
 
 int ReiPan_ConfigSave(void)
@@ -1642,7 +1682,7 @@ int ReiPan_ConfigSave(void)
      * regenerating it on the resize pass would be pure waste. */
     const std::string input_section = BuildInputSection();
     const std::string camera_section = BuildCameraSection() + BuildMouseSection() +
-        BuildGyroSection() +
+        BuildGyroSection() + BuildRumbleSection() +
         "\n[overlay]\n"
         "; The menu bar F1 shows and hides, as it was left.\n"
         "menu_bar = " + std::to_string(reipan_config.overlay_menu_bar != 0 ? 1 : 0) +
@@ -2067,6 +2107,14 @@ void ReiPan_ConfigApply(void)
     gs.invert_x = g->invert_x;
     gs.invert_y = g->invert_y;
     ReiPan_GyroSetSettings(&gs);
+
+    const ReiPan_ConfigRumble *rumble = &reipan_config.rumble;
+    ReiPan_HapticsSettings     hs;
+    hs.strength = rumble->strength;
+    hs.triggers = rumble->triggers;
+    hs.trigger_strength = rumble->trigger_strength;
+    hs.camera = rumble->camera;
+    ReiPan_HapticsSetSettings(&hs);
 }
 
 void ReiPan_ConfigCapture(void)
@@ -2140,6 +2188,14 @@ void ReiPan_ConfigCapture(void)
     g->turn = gs.turn;
     g->invert_x = gs.invert_x;
     g->invert_y = gs.invert_y;
+
+    ReiPan_HapticsSettings hs;
+    ReiPan_HapticsGetSettings(&hs);
+    ReiPan_ConfigRumble *rumble = &reipan_config.rumble;
+    rumble->strength = hs.strength;
+    rumble->triggers = hs.triggers;
+    rumble->trigger_strength = hs.trigger_strength;
+    rumble->camera = hs.camera;
 
     /* The windowed size, which the renderer latches while the window is not
      * fullscreen.  Reading the live window instead would store the desktop
